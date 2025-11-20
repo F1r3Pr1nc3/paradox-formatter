@@ -1,7 +1,7 @@
 {
-    "name": "paradox-formatter",
-    "displayName": "paradox-formatter",
-    "description": "paradox file formatter",
+    "name": "paradox-script-formatter",
+    "displayName": "PDX Script Formatter",
+    "description": "paradox script file formatter",
     "private": true,
     "icon": "icon.png",
     "publisher": "f1r3pr1nc3",
@@ -31,7 +31,7 @@
         "formatters": [
             {
                 "language": "stellaris",
-                "displayName": "Paradox Formatter"
+                "displayName": "PDX Script Formatter"
             }
         ],
         "languages": [
@@ -70,8 +70,8 @@
     },
     "activationEvents": [
         "onLanguage:stellaris",
-        "onCommand:paradox-formatter.formatDocument",
-        "onCommand:paradox-formatter.formatSelection"
+        "onCommand:paradox-script-formatter.formatDocument",
+        "onCommand:paradox-script-formatter.formatSelection"
     ],
     "main": "./out/extension",
     "scripts": {

@@ -41,7 +41,7 @@ const vscode = __importStar(require("vscode"));
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 function activate(context) {
-    console.log('Congratulations, your extension "paradox-formatter" is now active!');
+    console.log('Congratulations, your extension "paradox-script-formatter" is now active!');
     const formatter = vscode.languages.registerDocumentFormattingEditProvider('stellaris', {
         provideDocumentFormattingEdits(document) {
             // This is where the actual formatting logic will go.

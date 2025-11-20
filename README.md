@@ -49,17 +49,17 @@ Allows formatting of just a specific block of code without touching the rest of 
 
 You can install the packaged extension directly using the `.vsix` file.
 
-1.  **Download** the `paradox-formatter-0.2.0.vsix` file.
+1.  **Download** the `paradox-script-formatter-0.2.0.vsix` file.
 2.  Open **VS Code**.
 3.  Go to the **Extensions View** (`Ctrl+Shift+X`).
 4.  Click the **three dots icon (...)** at the top-right of the Extensions menu.
 5.  Select **"Install from VSIX..."**.
-6.  Locate and select the `paradox-formatter-0.2.0.vsix` file.
+6.  Locate and select the `paradox-script-formatter-0.2.0.vsix` file.
 
 Alternatively, you can install it via the command line:
 
 ```bash
-code --install-extension paradox-formatter-0.2.0.vsix
+code --install-extension paradox-script-formatter-0.2.0.vsix
 ```
 
 ### Supported File Types
@@ -85,8 +85,8 @@ To ensure this formatter is used automatically when you save a file, you need to
 ```json
 {
     // Sets the Paradox Formatter as the default for all languages where it applies
-    "editor.defaultFormatter": "f1r3pr1nc3.paradox-formatter",
-    
+    "editor.defaultFormatter": "f1r3pr1nc3.paradox-script-formatter",
+
     // Recommended: Set preferred indentation style (if not using .editorconfig)
     "editor.insertSpaces": false, // Use tabs
     "editor.tabSize": 4
