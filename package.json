@@ -1,0 +1,67 @@
+{
+	"name": "paradox-formatter",
+	"displayName": "paradox-formatter",
+	"description": "paradox file formatter",
+	"icon": "icon.png",
+	"version": "0.1.8",
+	"publisher": "f1r3pr1nc3",
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Formatters"
+	],
+	"capabilities": {
+		"documentFormattingProvider": "true",
+		"documentRangeFormattingProvider": "true"
+	},
+	"contributes": {
+		"languages": [
+			{
+				"id": "paradox",
+				"aliases": [
+					"paradox",
+					"Paradox"
+				],
+				"extensions": [
+					".txt",
+					".mod"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		]
+	},
+	"activationEvents": [
+		"onLanguage:paradox", "onLanguage:stellaris",
+		"onCommand:paradox-formatter.formatDocument",
+		"onCommand:paradox-formatter.formatSelection"
+	],
+	"main": "./out/extension",
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"test": "npm run compile && node ./node_modules/vscode/bin/test"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.75.0",
+		"@types/glob": "^8.1.0",
+		"@types/mocha": "^10.0.1",
+		"typescript": "^5.1.3"
+	},
+	"repository": {
+		"url": "https://github.com/f1r3pr1nc3/paradox-formatter"
+	},
+	"__metadata": {
+		"id": "4228d619-49e0-415a-adfb-9b0cc7714cb3",
+		"publisherId": "6bb5f3c5-cace-46d4-898f-f73f7de4cc0f",
+		"publisherDisplayName": "f1r3pr1nc3",
+		"targetPlatform": "undefined",
+		"isApplicationScoped": false,
+		"updated": false,
+		"isPreReleaseVersion": false,
+		"preRelease": false,
+		"installedTimestamp": 1661194603247,
+		"size": 94770
+	}
+}
