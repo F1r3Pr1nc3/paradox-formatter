@@ -16,15 +16,15 @@ Automatically expands one-line blocks into readable, multi-line structures, whic
 
 **Before:**
 ```paradox
-NOR = { has_star_flag = marauder_starbase_destroyed has_star_flag = starbase_destroyed }
+AND = { NOT = { has_overlord = event_target:FirstSleeper } NOT = { has_overlord = event_target:SecondSleeper } }
 ````
 
 **After:**
 
 ```paradox
 NOR = {
-    has_star_flag = marauder_starbase_destroyed
-    has_star_flag = starbase_destroyed
+    has_overlord = event_target:FirstSleeper
+    has_overlord = event_target:SecondSleeper
 }
 ```
 
@@ -41,6 +41,60 @@ Allows formatting of just a specific block of code without touching the rest of 
 
   * **Shortcut:** `Ctrl + K`, `Ctrl + F` (or `Cmd + K`, `Cmd + F` on Mac)
 
+### 4. Advanced Logic Optimization (NAND)
+The extension can now recognize and simplify complex logical expressions, such as nested `NAND` blocks, into a more readable and efficient format. This is particularly useful for complex AI logic or event scripting.
+
+**Before:**
+```paradox
+limit = {
+    OR = {
+        AND = {
+            NOT = { exists = owner }
+            OR = {
+                is_active_resolution = "resolution_rulesofwar_reverence_for_life"
+                is_active_resolution = "resolution_rulesofwar_independent_tribunals"
+                is_active_resolution = "resolution_rulesofwar_last_resort_doctrine"
+                is_active_resolution = "resolution_rulesofwar_demobilization_initiative"
+            }
+        }
+        AND = {
+            exists = owner
+            owner = {
+                is_crisis_faction = no
+                NOT = { has_been_declared_crisis = yes }
+            }
+            OR = {
+                is_active_resolution = "resolution_rulesofwar_reverence_for_life"
+                is_active_resolution = "resolution_rulesofwar_independent_tribunals"
+                is_active_resolution = "resolution_rulesofwar_last_resort_doctrine"
+                is_active_resolution = "resolution_rulesofwar_demobilization_initiative"
+            }
+        }
+    }
+}
+```
+
+**After:**
+```paradox
+limit = {
+    OR = {
+        is_active_resolution = "resolution_rulesofwar_reverence_for_life"
+        is_active_resolution = "resolution_rulesofwar_independent_tribunals"
+        is_active_resolution = "resolution_rulesofwar_last_resort_doctrine"
+        is_active_resolution = "resolution_rulesofwar_demobilization_initiative"
+    }
+    NAND = {
+        exists = owner
+        owner = {
+            OR = {
+                is_crisis_faction = yes
+                has_been_declared_crisis = yes
+            }
+        }
+    }
+}
+```
+
 -----
 
 ## 🚀 Installation
@@ -49,17 +103,17 @@ Allows formatting of just a specific block of code without touching the rest of 
 
 You can install the packaged extension directly using the `.vsix` file.
 
-1.  **Download** the `paradox-script-formatter-0.2.0.vsix` file.
+1.  **Download** the `paradox-script-formatter-0.2.5.vsix` file.
 2.  Open **VS Code**.
 3.  Go to the **Extensions View** (`Ctrl+Shift+X`).
 4.  Click the **three dots icon (...)** at the top-right of the Extensions menu.
 5.  Select **"Install from VSIX..."**.
-6.  Locate and select the `paradox-script-formatter-0.2.0.vsix` file.
+6.  Locate and select the `paradox-script-formatter-0.2.5.vsix` file.
 
 Alternatively, you can install it via the command line:
 
 ```bash
-code --install-extension paradox-script-formatter-0.2.0.vsix
+code --install-extension paradox-script-formatter-0.2.5.vsix
 ```
 
 ### Supported File Types
