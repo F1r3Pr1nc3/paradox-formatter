@@ -1,7 +1,7 @@
 {
     "name": "paradox-script-formatter",
     "displayName": "PDX Script Formatter",
-    "description": "paradox script file formatter",
+    "description": "A robust, whitespace-aware formatter for Paradox Interactive game scripts, powered by a sophisticated Python library for advanced logic optimization.",
     "private": true,
     "icon": "icon.png",
     "publisher": "f1r3pr1nc3",
@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.2.0",
+    "version": "0.2.5",
     "preview": true,
     "repository": {
         "type": "git",
@@ -75,7 +75,6 @@
     ],
     "main": "./out/extension",
     "scripts": {
-        "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
         "test": "npm run compile && node ./node_modules/vscode/bin/test"
