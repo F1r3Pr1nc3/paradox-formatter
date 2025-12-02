@@ -204,7 +204,15 @@ class ParadoxDocumentFormatter {
 function activate(ctx) {
     const selector = [
         { scheme: 'file', language: 'paradox' },
-        { scheme: 'file', language: 'stellaris' }
+        { scheme: 'file', language: 'stellaris' },
+        { scheme: 'file', language: 'hoi4' },
+        { scheme: 'file', language: 'ck2' },
+        { scheme: 'file', language: 'eu4' },
+        { scheme: 'file', language: 'imperator' },
+        { scheme: 'file', language: 'vic2' },
+        { scheme: 'file', language: 'ck3' },
+        { scheme: 'file', language: 'vic3' },
+        { scheme: 'file', language: 'eu5' }
     ];
 
     const formatter = new ParadoxDocumentFormatter();

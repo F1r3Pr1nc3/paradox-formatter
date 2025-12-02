@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.2.7",
+    "version": "0.2.8",
     "preview": true,
     "repository": {
         "type": "git",
@@ -29,6 +29,10 @@
     },
     "contributes": {
         "formatters": [
+            {
+                "language": "paradox",
+                "displayName": "PDX Script Formatter"
+            },
             {
                 "language": "stellaris",
                 "displayName": "PDX Script Formatter"
@@ -58,18 +62,71 @@
                     ".mod"
                 ],
                 "configuration": "./language-configuration.json"
-            }
+            },
+			{
+				"id": "hoi4"
+			},
+			{
+				"id": "ck2"
+			},
+			{
+				"id": "eu4"
+			},
+			{
+				"id": "imperator"
+			},
+			{
+				"id": "vic2"
+			},
+			{
+				"id": "ck3"
+			},
+			{
+				"id": "vic3"
+			},
+			{
+				"id": "eu5"
+			}
         ],
         "grammars": [
+            {
+                "language": "paradox",
+                "scopeName": "source.mod",
+                "path": "./syntaxes/paradox.tmLanguage.json"
+            },
             {
                 "language": "stellaris",
                 "scopeName": "source.mod",
                 "path": "./syntaxes/stellaris.tmLanguage.json"
+            },
+            {
+                "language": "hoi4",
+                "scopeName": "source.mod",
+                "path": "./syntaxes/hoi4.tmLanguage.json"
+            },
+            {
+                "language": "ck2",
+                "scopeName": "source.mod",
+                "path": "./syntaxes/ck2.tmLanguage.json"
+            },
+            {
+                "language": "eu4",
+                "scopeName": "source.mod",
+                "path": "./syntaxes/eu4.tmLanguage.json"
             }
         ]
     },
     "activationEvents": [
+        "onLanguage:paradox",
         "onLanguage:stellaris",
+        "onLanguage:hoi4",
+        "onLanguage:ck2",
+        "onLanguage:eu4",
+        "onLanguage:imperator",
+        "onLanguage:vic2",
+        "onLanguage:ck3",
+        "onLanguage:vic3",
+        "onLanguage:eu5",
         "onCommand:paradox-script-formatter.formatDocument",
         "onCommand:paradox-script-formatter.formatSelection"
     ],

@@ -1,0 +1,60 @@
+{
+    "scopeName": "source.stellaris",
+    "name": "Stellaris",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#keywords"
+        },
+        {
+            "include": "#strings"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.number-sign.stellaris",
+                    "match": "#.*$"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.stellaris",
+                    "match": "\\b(if|else|limit|trigger|effect|events|mean_time_to_happen|mtth|factor|modifier|while|break|continue|switch|default|case)\\b"
+                },
+                {
+                    "name": "variable.language.scope.stellaris",
+                    "match": "\\b(country|capital|controller|root|this|prev|from|owner|random)\\b"
+                },
+                {
+                    "name": "variable.language.trigger.stellaris",
+                    "match": "\\b(if|and|or|not|has_active_event|has_defensive_pact|happiness|has_ring|is_ai)\\b"
+                },
+                {
+                    "name": "variable.language.effect.stellaris",
+                    "match": "\\b(hidden_effect|custom_tooltip|win|end_all_treaties_with|random_list|locked_random_list|set_leader_immortal|add_modifier)\\b"
+                }
+            ]
+        },
+        "strings": {
+            "patterns": [
+                {
+                    "name": "string.quoted.double.stellaris",
+                    "begin": "\"",
+                    "end": "\"",
+                    "patterns": [
+                        {
+                            "name": "constant.character.escape.stellaris",
+                            "match": "\\."
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}

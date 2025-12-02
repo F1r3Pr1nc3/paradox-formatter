@@ -1,0 +1,263 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "Paradox",
+	"scopeName": "source.mod",
+	"uuid": "2edebb0f-3089-4abb-8b82-9974e337ad9f",
+	"foldingStartMarker": "^\\s*#",
+	"foldingStopMarker": "(?!^[^#])",
+	"patterns": [
+		{
+			"include": "#namespace"
+		},
+		{
+			"include": "#code"
+		}
+	],
+	"repository": {
+		"namespace": {
+			"patterns": [
+				{
+					"name": "meta.namespace.paradox",
+					"match": "^\\s*[^@]?((namespace)\\s[=]\\s([\\w.]+))",
+					"captures": {
+						"1": {
+							"name": "meta.namespace.identifier.txt"
+						},
+						"2": {
+							"name": "keyword.other.namespace.txt"
+						},
+						"3": {
+							"name": "entity.name.type.namespace.txt"
+						}
+					}
+				}
+			]
+		},
+		"id": {
+			"patterns": [
+				{
+					"name": "meta.id.paradox",
+					"match": "^\\s*[^@]?((id)\\s[=]\\s([A-Za-z_]+(.)([0-9]+)))",
+					"captures": {
+						"1": {
+							"name": "meta.id.identifier.txt"
+						},
+						"2": {
+							"name": "keyword.other.id.txt"
+						},
+						"3": {
+							"name": "entity.name.type.id.txt"
+						},
+						"4": {
+							"name": "entity.name.type.period.txt"
+						},
+						"5": {
+							"name": "entity.name.type.number.txt"
+						}
+					}
+				}
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{
+					"name": "keyword.control.paradox",
+					"match": "\\b(if|else|limit|trigger|effect|events|mean_time_to_happen|mtth|factor|modifier|while|break|continue|switch|default|case)\\b"
+				},
+				{
+					"name": "variable.language.paradox",
+					"match": "\\b(id|title|desc|name|option|picture|icon|sound|localization|portraits|event_scope|potential|text|fail_text|success_text|allow|active|valid|which|days|event_chain|small_icon|ai_weight|ai_allow|weight|monthly|accumulative|decay|months|unique|key|flag|min|max|add|tech|length|random_weight|value|scope|who|amount|context|show_name|tooltip|description)\\b"
+				},
+				{
+					"name": "variable.language.scope.paradox",
+					"match": "\\b(ROOT|root|FROM|from|PREV|prev|THIS|this|event_target)\\b"
+				},
+				{
+					"name": "constant.language.paradox",
+					"match": "\\b(yes|no|always|never)\\b"
+				},
+				{
+					"name": "variable.boolean.paradox",
+					"comment": "LHS boolean operators",
+					"match": "\\b(or|and|not|nor|nand|OR|AND|NOT|NOR|NAND)\\b"
+				}
+			]
+		},
+		"constants": {
+			"patterns": [
+				{
+					"name": "constant.prefdef.paradox",
+					"comment": "A RHS script variable (... = @variable)",
+					"match": "(@\\w+)"
+				},
+				{
+					"name": "constant.language.paradox",
+					"match": "(yes|no)+"
+				},
+				{
+					"name": "constant.numeric.paradox",
+					"comment": "A RHS number, either integer or float, positive or negative",
+					"match": "-?\\b(([0-9]+\\.?[0-9]*)|(\\.?[0-9]+))\\b"
+				},
+				{
+					"name": "constant.rhs.paradox",
+					"comment": "A more generic RHS number, any combination of digits and dots",
+					"match": "(\\d|\\.)+"
+				},
+				{
+					"name": "constant.rhs.string.paradox",
+					"comment": "Any other RHS value, any combination of word characters and dots",
+					"match": "(\\w|\\.)+"
+				}
+			]
+		},
+		"comment": {
+			"patterns": [
+				{
+					"name": "comment.line.number-sign.paradox",
+					"begin": "#",
+					"captures": {
+						"1": {
+							"name": "punctuation.definition.comment.paradox"
+						}
+					},
+					"end": "$\\n?"
+				}
+			]
+		},
+		"block": {
+			"patterns": [
+				{
+					"begin": "(?<==)\\s*{",
+					"beginCaptures": {
+						"0": {
+							"name": "punctuation.section.block.begin.paradox"
+						}
+					},
+					"end": "}",
+					"endCaptures": {
+						"0": {
+							"name": "punctuation.section.block.end.paradox"
+						}
+					},
+					"name": "meta.block.paradox",
+					"patterns": [
+						{
+							"include": "#code"
+						}
+					]
+				}
+			]
+		},
+		"code": {
+			"patterns": [
+				{
+					"include": "#block"
+				},
+				{
+					"include": "#comment"
+				},
+				{
+					"include": "#id"
+				},
+				{
+					"include": "#keywords"
+				},
+				{
+					"include": "#constants"
+				},
+				{
+					"include": "#variables"
+				}
+			]
+		},
+		"variables": {
+			"patterns": [
+				{
+					"comment": "LHS for value, but not block (>keyword =< something)",
+					"begin": "[^\\S\\n]*(?<!@)(?=\\b\\w+\\b[^\\S\\n]*(=|<|>|<=|>=)[^\\S\\n]*[^{\\s])",
+					"end": "[^\\S\\n]*(=|<|>|<=|>=)",
+					"contentName": "variable.paradox",
+					"patterns": [
+						{
+							"comment": "LHS is a keyword",
+							"include": "#keywords"
+						}
+					]
+				},
+				{
+					"comment": "RHS for value (keyword = >something<)",
+					"begin": "[^\\S\\n]*(?<==|<|>|<=|>=)[^\\S\\n]*",
+					"end": "[\\s]+",
+					"contentName": "variable.language.rhs.paradox",
+					"patterns": [
+						{
+							"include": "#rhs"
+						}
+					]
+				},
+				{
+					"comment": "LHS for block not value (>keyword =< { ... })",
+					"begin": "[^\\S\\n]*(?<!@)(?=\\b[\\w:.]+\\b[^\\S\\n]*=[^\\S\\n]*[{])",
+					"end": "[^\\S\\n]*=",
+					"contentName": "variable.scope.paradox",
+					"patterns": [
+						{
+							"comment": "LHS for a block is just a keyword",
+							"include": "#keywords"
+						}
+					]
+				},
+				{
+					"comment": "Special rule for capturing script variables (@something = constant)",
+					"begin": "(?<=(@))(?=\\b\\w+\\b)",
+					"beginCaptures": {
+						"1": {
+							"name": "punctuation.definition.variable.paradox"
+						}
+					},
+					"end": "\\s",
+					"contentName": "variable.other.paradox",
+					"patterns": [
+						{
+							"include": "#constants"
+						}
+					]
+				}
+			]
+		},
+		"strings": {
+			"name": "string.quoted.double.paradox",
+			"begin": "\"",
+			"beginCaptures": {
+				"0": {
+					"name": "punctuation.definition.string.begin.paradox"
+				}
+			},
+			"end": "\"",
+			"endCaptures": {
+				"0": {
+					"name": "punctuation.definition.string.end.paradox"
+				}
+			},
+			"patterns": [
+				{
+					"name": "constant.character.escape.paradox",
+					"match": "\\\\."
+				}
+			]
+		},
+		"rhs": {
+			"patterns": [
+				{
+					"comment": "RHS is either a constant value",
+					"include": "#constants"
+				},
+				{
+					"comment": "Or a generic string",
+					"include": "#strings"
+				}
+			]
+		}
+	}
+}

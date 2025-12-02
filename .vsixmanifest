@@ -3,7 +3,7 @@
 	xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"
 	xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
 	<Metadata>
-		<Identity Language="en-US" Id="paradox-script-formatter" Version="0.2.7" Publisher="f1r3pr1nc3" />
+		<Identity Language="en-US" Id="paradox-script-formatter" Version="0.2.8" Publisher="f1r3pr1nc3" />
 		<DisplayName>PDX Script Formatter</DisplayName>
 		<Description xml:space="preserve">Paradox Script Formatter</Description>
 		<Tags>paradox,Paradox,stellaris,Stellaris,__ext_txt,__ext_mod</Tags>
