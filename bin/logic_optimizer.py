@@ -15,7 +15,7 @@ def tokenize(text):
     # Captures: comments, quoted strings, operators, words, newlines
 
     # Added group 3: (@\[[\s\S]*?\]) to capture @[ ... ] blocks including newlines
-    token_pattern = re.compile(r'(#.*)|("[^"]*")|(@\[[\s\S]*?\])|((?:!=|>=|<=|[=\{\}<>!]))|([^\s=\{\}<>!]+)|\n')
+    token_pattern = re.compile(r'(#.*)|("[^"]*")|(@\\?\[[^\]]+\])|(!=|>=|<=|[=\{\}<>!])|([^\s=\{\}<>!]+)|\n')
 
     tokens = []
     current_line = 1
@@ -208,6 +208,31 @@ def nodes_are_equal(n1, n2):
         return True
     return v1 == v2
 
+# Helper for extracting common factors from AND children
+def _extract_common_and_children(and_children_nodes):
+    common_nodes = []
+    if not and_children_nodes:
+        return common_nodes, []
+
+    first_and_block_nodes = [n for n in and_children_nodes[0]['val'] if n['type'] == 'node']
+
+    for candidate in first_and_block_nodes:
+        is_everywhere = True
+        for other_child in and_children_nodes[1:]:
+            other_contents = [n for n in other_child['val'] if n['type'] == 'node']
+            if not any(nodes_are_equal(candidate, other_node) for other_node in other_contents):
+                is_everywhere = False
+                break
+        if is_everywhere:
+            common_nodes.append(candidate)
+
+    # Remove common nodes from children
+    modified_and_children = copy.deepcopy(and_children_nodes)
+    for child in modified_and_children:
+        child['val'] = [c for c in child['val'] if c['type'] == 'comment' or not any(nodes_are_equal(c, common) for common in common_nodes)]
+    
+    return common_nodes, modified_and_children
+
 # --- 4. Optimize ---
 def optimize_node_list(node_list, parent_key=None):
     changed_any = False
@@ -359,9 +384,57 @@ def optimize_node_list(node_list, parent_key=None):
 
             if key == 'NOR':
                 children_nodes = [n for n in node['val'] if n['type'] == 'node']
+                # Check for single child optimization
                 if len(children_nodes) == 1:
                     node['key'] = 'NOT'
                     changed_any = True
+
+                # Check for common factors in AND children (De Morgan's Laws extraction)
+                # NOR = { AND={A B} AND={A C} }  ->  (NOT={A}) OR (NOR={ AND={B} AND={C} })
+                # Logic: !( (A&B) | (A&C) ) = !( A & (B|C) ) = !A | !(B|C)
+                elif len(children_nodes) > 1 and all(child.get('key') == 'AND' and isinstance(child.get('val'), list) for child in children_nodes):
+                    common_nodes, modified_and_children = _extract_common_and_children(children_nodes)
+
+                    if common_nodes:
+                        changed_any = True
+                        new_nor_children = [] # This will be the new children of the OR node (that was originally NOR)
+
+                        # Add NOT for each common node (!A)
+                        for common in common_nodes:
+                            # If common is 'x = no', negate to 'x = yes' directly
+                            if common.get('val') == 'no':
+                                new_sibling = copy.deepcopy(common)
+                                new_sibling['val'] = 'yes'
+                                new_nor_children.append(new_sibling)
+                            # If common is NOT={x}, negate to 'x' directly (if simple)
+                            elif common.get('key') == 'NOT' and isinstance(common.get('val'), list):
+                                # Simplistic unwrap, might need more robust handling
+                                new_nor_children.extend([copy.deepcopy(c) for c in common['val']])
+                            # Otherwise wrap in NOT
+                            else:
+                                new_not = {'key': 'NOT', 'op': '=', 'val': [copy.deepcopy(common)], 'type': 'node'}
+                                new_nor_children.append(new_not)
+
+                        print("Simplified common factors of AND", file=sys.stderr)
+                        # Add the remaining NOR part ( !(B|C) )
+                        # This becomes a new NOR block with the modified AND children
+                        # The comments from the original NOR block should be passed down.
+                        cm_open_val = node.get('_cm_open')
+                        cm_close_val = node.get('_cm_close')
+
+                        remaining_nor_node = {'key': 'NOR', 'op': '=', 'val': modified_and_children, 'type': 'node'}
+                        if cm_open_val: remaining_nor_node['_cm_open'] = cm_open_val
+                        if cm_close_val: remaining_nor_node['_cm_close'] = cm_close_val
+                        
+                        new_nor_children.append(remaining_nor_node)
+
+                        # Transform the original NOR node into an OR node with the new children
+                        node['key'] = 'OR'
+                        node['op'] = '=' # OR typically uses '=' as its operator if there's no specific one
+                        node['val'] = new_nor_children
+                        # Clear specific comments that were moved to remaining_nor_node
+                        if '_cm_open' in node: del node['_cm_open']
+                        if '_cm_close' in node: del node['_cm_close']
 
             if key == 'AND':
                 children_nodes = [n for n in node['val'] if n['type'] == 'node']
@@ -518,39 +591,25 @@ def optimize_node_list(node_list, parent_key=None):
 
                 if len(children) > 1:
                     if all(child.get('key') == 'AND' and isinstance(child.get('val'), list) for child in children):
-                        first_and_block = [n for n in children[0]['val'] if n['type'] == 'node']
-                        common_nodes = []
-                        for candidate in first_and_block:
-                            is_everywhere = True
-                            for other_child in children[1:]:
-                                other_contents = [n for n in other_child['val'] if n['type'] == 'node']
-                                found_match = False
-                                for other_node in other_contents:
-                                    if nodes_are_equal(candidate, other_node): found_match = True; break
-                                if not found_match: is_everywhere = False; break
-                            if is_everywhere: common_nodes.append(candidate)
+                        common_nodes, modified_children = _extract_common_and_children(children)
 
-                            if common_nodes:
-                                changed_any = True
-                                for common in common_nodes: new_list.append(copy.deepcopy(common))
-                                for child in children:
-                                    new_child_val = []
-                                    for child_node in child['val']:
-                                        if child_node['type'] == 'comment': new_child_val.append(child_node); continue
-                                        is_common = False
-                                        for c in common_nodes:
-                                            if nodes_are_equal(child_node, c): is_common = True; break
-                                        if not is_common: new_child_val.append(child_node)
-                                    child['val'] = new_child_val
+                        if common_nodes:
+                            changed_any = True
+                            for common in common_nodes:
+                                new_list.append(copy.deepcopy(common))
+                            node['val'] = modified_children # Update the OR node's children
+                            print("Simplified common factors of AND", file=sys.stderr)
         new_list.append(node)
     return new_list, changed_any
 
 # --- 5. Output Builder ---
 # Define keys that should always be forced compact if they have no operator or are simple lists
-force_compact_keys = {"atmosphere_color"} # for 'key_val' , "hsv", "rgb", "rgb255"
+# force_compact_keys = {"atmosphere_color", "value"} # for 'key_val' , "hsv", "rgb", "rgb255"
+force_compact_keys = {"hsv", "rgb", "rgb255"} # for 'key_val'
 compact_nodes = ("_event", "switch", "tags", "NOT", "_technology", "_offset", "_flag", "flags") # Never LB if possible
 not_compact_nodes = ("cost", "upkeep", "produces", "else", "if", "else_if", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "settings", "while") # Always LB
 normal_nodes = ("limit", "add_resource", "ai_chance") # If > 1 item LB
+
 def should_be_compact(node):
     if not isinstance(node.get('val'), list): return False
     children = node['val']
@@ -559,7 +618,15 @@ def should_be_compact(node):
 
     if any(child['type'] == 'comment' for child in children): return False
     if node.get('_cm_open'): return False
-    if key in force_compact_keys: return True
+
+    # Special Case: hsv { ... } etc. (operator-less blocks)
+    # Usually simple data lists, should be compact
+    if node.get('op') == '=':
+        val_key = node.get('val_key','')
+        # if val_key: print(f"val_key {val_key}") # DEBUG
+        if val_key and val_key in force_compact_keys:
+            # print(f"compact key {val_key}", file=sys.stderr)
+            return True
     logic_children = [c for c in children if c['type'] == 'node']
     children_len = len(logic_children)
     if children_len > 2: return False
