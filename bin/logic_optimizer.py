@@ -230,10 +230,97 @@ def _extract_common_and_children(and_children_nodes):
     modified_and_children = copy.deepcopy(and_children_nodes)
     for child in modified_and_children:
         child['val'] = [c for c in child['val'] if c['type'] == 'comment' or not any(nodes_are_equal(c, common) for common in common_nodes)]
-    
+
     return common_nodes, modified_and_children
 
-# --- 4. Optimize ---
+# --- 4. Lowercase Keys ---
+def lowercase_keys(node_list):
+    """
+    Recursively iterates through the node tree and converts specific keys
+    (scopes, commands) to lowercase.
+    """
+    KEYWORDS_TO_LOWER = {
+        # Scopes
+        'ROOT', 'PREV', 'FROM', 'THIS', 'OWNER', 'CONTROLLER',
+        # Flow Control & Commands
+        'IF', 'ELSE', 'ELSE_IF', 'LIMIT', 'TRIGGER', 'EFFECT', 'FACTOR', 'MODIFIER', 'WHILE', 'BREAK', 'CONTINUE', 'SWITCH', 'DEFAULT'
+    }
+
+    changed = False
+    for node in node_list:
+        if node['type'] == 'node':
+            if 'key' in node:
+                original_key = node['key']
+                if original_key.upper() in KEYWORDS_TO_LOWER:
+                    lower_key = original_key.lower()
+                    if original_key != lower_key:
+                        node['key'] = lower_key
+                        changed = True
+
+            if 'val_key' in node:
+                original_val_key = node['val_key']
+                if original_val_key.upper() in KEYWORDS_TO_LOWER:
+                    lower_val_key = original_val_key.lower()
+                    if original_val_key != lower_val_key:
+                        node['val_key'] = lower_val_key
+                        changed = True
+
+            if isinstance(node.get('val'), list):
+                child_changed = lowercase_keys(node['val'])
+                if child_changed:
+                    changed = True
+    return changed
+
+# --- 5. Uppercase Keys ---
+def uppercase_keys(node_list):
+    """
+    Recursively iterates through the node tree and converts specific keys
+    (logical operators) to uppercase.
+    """
+    KEYWORDS_TO_UPPER = {
+        'OR', 'AND', 'NOR', 'NAND', 'NOT'
+    }
+
+    changed = False
+    for node in node_list:
+        if node['type'] == 'node':
+            if 'key' in node:
+                original_key = node['key']
+                if original_key.upper() in KEYWORDS_TO_UPPER:
+                    upper_key = original_key.upper()
+                    if original_key != upper_key:
+                        node['key'] = upper_key
+                        changed = True
+
+            if isinstance(node.get('val'), list):
+                child_changed = uppercase_keys(node['val'])
+                if child_changed:
+                    changed = True
+    return changed
+
+# --- 6. Lowercase Yes/No Values ---
+def lowercase_yes_no_values(node_list):
+    """
+    Recursively iterates through the node tree and converts 'yes' and 'no' values to lowercase.
+    """
+    changed = False
+    for node in node_list:
+        if node['type'] == 'node':
+            if node.get('val') in ['yes', 'no', 'YES', 'NO']:
+                original_val = node['val']
+                lower_val = original_val.lower()
+                if original_val != lower_val:
+                    node['val'] = lower_val
+                    changed = True
+
+            # Recurse into nested blocks (if val is a list of nodes)
+            if isinstance(node.get('val'), list):
+                child_changed = lowercase_yes_no_values(node['val'])
+                if child_changed:
+                    changed = True
+    return changed
+
+# --- 7. Optimize ---
 def optimize_node_list(node_list, parent_key=None):
     changed_any = False
 
@@ -265,92 +352,95 @@ def optimize_node_list(node_list, parent_key=None):
     if changed_any:
         node_list = merged_list
 
+    # --- Flatten nested OR/AND/NOR/NAND blocks ---
+    for node in node_list:
+        if node['type'] == 'node' and isinstance(node.get('val'), list):
+            key = node.get('key')
+            if key in ('OR', 'AND', 'NOR', 'NAND'):
+                i = 0
+                while i < len(node['val']):
+                    child = node['val'][i]
+                    if child['type'] == 'node' and child.get('key') == key and isinstance(child.get('val'), list):
+                        # Replace child with its own children
+                        node['val'][i:i+1] = child['val']
+                        changed_any = True
+                        # Rescan from the same index `i` as new items were inserted
+                        continue
+                    i += 1
+
     # --- Start of other optimization passes (simplified boilerplate for brevity) ---
+    # Combine consecutive NOTs, 'no' values, and NORs into a single NOR
     new_list = []
-    # Combine consecutive NOTs and 'no' values into a NOR
     i = 0
     while i < len(node_list):
         node = node_list[i]
-        if i + 1 < len(node_list):
-            next_node = node_list[i+1]
 
-            # Case 1: NOT followed by key=no
-            if node['type'] == 'node' and node.get('key') == 'NOT' and \
-               next_node['type'] == 'node' and next_node.get('val') == 'no':
+        is_candidate_node = False
+        if node['type'] == 'node':
+            if node.get('val') == 'no' and node.get('op') == '=':
+                is_candidate_node = True
+            elif node.get('key') == 'NOR':
+                is_candidate_node = True
+            elif node.get('key') == 'NOT':
+                child_val = node.get('val')
+                # Avoid merging NOT={OR...} or NOT={AND...} which have specific optimizations
+                if not (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
+                    is_candidate_node = True
 
-                nor_children = []
-                if isinstance(node.get('val'), list):
-                    nor_children.extend(node['val'])
+        if not is_candidate_node:
+            new_list.append(node)
+            i += 1
+            continue
 
-                new_no_node = copy.deepcopy(next_node)
-                new_no_node['val'] = 'yes'
-                nor_children.append(new_no_node)
-
-                new_nor_node = {'key': 'NOR', 'op': '=', 'val': nor_children, 'type': 'node'}
-                new_list.append(new_nor_node)
-                changed_any = True
-                i += 2 # Skip next node
-                continue
-
-            # Case 2: key=no followed by NOT
-            elif node['type'] == 'node' and node.get('val') == 'no' and \
-                 next_node['type'] == 'node' and next_node.get('key') == 'NOT':
-
-                nor_children = []
-                new_no_node = copy.deepcopy(node)
-                new_no_node['val'] = 'yes'
-                nor_children.append(new_no_node)
-
-                if isinstance(next_node.get('val'), list):
-                    nor_children.extend(next_node['val'])
-
-                new_nor_node = {'key': 'NOR', 'op': '=', 'val': nor_children, 'type': 'node'}
-                new_list.append(new_nor_node)
-                changed_any = True
-                i += 2 # Skip next node
-                continue
-
-        new_list.append(node)
-        i += 1
-
-    node_list = new_list
-    new_list = []
-
-    # Combine consecutive NOTs into a NOR
-    i = 0
-    while i < len(node_list):
-        node = node_list[i]
-        if node['type'] == 'node' and node.get('key') == 'NOT':
-            # Found a NOT, look ahead for more
-            not_sequence = [node]
-            j = i + 1
-            while j < len(node_list):
-                next_node = node_list[j]
-                # Only merge plain NOTs, not NOT={OR...} which becomes NOR
-                if next_node['type'] == 'node' and next_node.get('key') == 'NOT':
+        # Found a potential start of a mergeable sequence. Look ahead for more.
+        sequence = [node]
+        j = i + 1
+        while j < len(node_list):
+            next_node = node_list[j]
+            is_comment = next_node['type'] == 'comment'
+            is_candidate_next_node = False
+            if next_node['type'] == 'node':
+                if next_node.get('val') == 'no' and next_node.get('op') == '=':
+                    is_candidate_next_node = True
+                elif next_node.get('key') == 'NOR':
+                    is_candidate_next_node = True
+                elif next_node.get('key') == 'NOT':
                     child_val = next_node.get('val')
-                    if isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND'):
-                        break
-                    not_sequence.append(next_node)
-                    j += 1
-                else:
-                    break
+                    if not (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
+                        is_candidate_next_node = True
 
-            if len(not_sequence) > 1:
-                # Merge into a NOR
-                nor_children = []
-                for not_node in not_sequence:
-                    if isinstance(not_node.get('val'), list):
-                        nor_children.extend(not_node['val'])
+            if is_candidate_next_node or is_comment:
+                sequence.append(next_node)
+                j += 1
+            else:
+                break
 
-                new_nor_node = {'key': 'NOR', 'op': '=', 'val': nor_children, 'type': 'node'}
-                new_list.append(new_nor_node)
-                changed_any = True
-                i = j # Move index past the processed sequence
-                continue
+        node_items = [n for n in sequence if n['type'] == 'node']
 
-        new_list.append(node)
-        i += 1
+        if len(node_items) > 1:
+            # Merge the sequence into a single NOR block
+            nor_children = []
+            for item in sequence:
+                if item['type'] == 'comment':
+                    nor_children.append(item)
+                    continue
+
+                if item.get('key') in ('NOR', 'NOT'):
+                    if isinstance(item.get('val'), list):
+                        nor_children.extend(item['val'])
+                elif item.get('val') == 'no':
+                    new_child = copy.deepcopy(item)
+                    new_child['val'] = 'yes'
+                    nor_children.append(new_child)
+
+            new_nor_node = {'key': 'NOR', 'op': '=', 'val': nor_children, 'type': 'node'}
+            new_list.append(new_nor_node)
+            changed_any = True
+            i = j # Move index past the processed sequence
+        else:
+            # Not enough nodes to merge, just append the first node and continue
+            new_list.append(node)
+            i += 1
 
     node_list = new_list
     new_list = []
@@ -425,7 +515,7 @@ def optimize_node_list(node_list, parent_key=None):
                         remaining_nor_node = {'key': 'NOR', 'op': '=', 'val': modified_and_children, 'type': 'node'}
                         if cm_open_val: remaining_nor_node['_cm_open'] = cm_open_val
                         if cm_close_val: remaining_nor_node['_cm_close'] = cm_close_val
-                        
+
                         new_nor_children.append(remaining_nor_node)
 
                         # Transform the original NOR node into an OR node with the new children
@@ -438,14 +528,20 @@ def optimize_node_list(node_list, parent_key=None):
 
             if key == 'AND':
                 children_nodes = [n for n in node['val'] if n['type'] == 'node']
-                if children_nodes and all(c.get('key') == 'NOT' for c in children_nodes):
-                    node['key'] = 'NOR'
-                    new_val = []
+                # NOR <=> AND = { 'NO'/'NOT' ... }
+                if children_nodes and all((c.get('key') == 'NOT' and isinstance(c.get('val'), list)) or (c.get('val') == 'no') for c in children_nodes):
+                    new_children = []
                     for child in children_nodes:
-                        if isinstance(child.get('val'), list):
-                            new_val.extend(child['val'])
-                    node['val'] = new_val
+                        if child.get('key') == 'NOT':
+                            new_children.extend([n for n in child.get('val', []) if n['type'] == 'node'])
+                        elif child.get('val') == 'no':
+                            new_child = copy.deepcopy(child)
+                            new_child['val'] = 'yes'
+                            new_children.append(new_child)
+                    node['key'] = 'NOR'
+                    node['val'] = new_children
                     changed_any = True
+                    print("Created NOR from AND-NO/NOT structure", file=sys.stderr)
 
             if key == 'NOT':
                 children_nodes = [n for n in node['val'] if n['type'] == 'node']
@@ -602,7 +698,7 @@ def optimize_node_list(node_list, parent_key=None):
         new_list.append(node)
     return new_list, changed_any
 
-# --- 5. Output Builder ---
+# --- 8. Output Builder ---
 # Define keys that should always be forced compact if they have no operator or are simple lists
 # force_compact_keys = {"atmosphere_color", "value"} # for 'key_val' , "hsv", "rgb", "rgb255"
 force_compact_keys = {"hsv", "rgb", "rgb255"} # for 'key_val'
@@ -820,18 +916,28 @@ def block_to_string(block_list):
         lines.append(node_to_string(node_to_print, depth=0))
     return "\n".join(lines)
 
-# --- 6. Main ---
+# --- 9. Main ---
 def process_text(content):
     try:
+        original_content = content
         content = content.replace('\r\n', '\n')
         tokens = tokenize(content)
         tree = parse(tokens)
+
+        keys_lowercased = lowercase_keys(tree)
+        keys_uppercased = uppercase_keys(tree)
+        yes_no_lowercased = lowercase_yes_no_values(tree)
         optimized_tree, logic_changed = optimize_node_list(tree)
-        new_content = block_to_string(optimized_tree)
-        if new_content != content:
-            return new_content, True
-        else:
-            return content, False
+
+        if keys_lowercased or keys_uppercased or yes_no_lowercased or logic_changed:
+            new_content = block_to_string(optimized_tree)
+            if new_content and not new_content.endswith('\n'):
+                new_content += '\n'
+
+            if new_content != original_content:
+                return new_content, True
+
+        return original_content, False
     except Exception as e:
         print(f"[Logic Optimizer] Error: {e}", file=sys.stderr)
         return content, False
