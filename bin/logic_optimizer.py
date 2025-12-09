@@ -248,7 +248,7 @@ KEYWORDS_TO_LOWER += (   # Flow Control & Commands
     'IF', 'ELSE', 'ELSE_IF', 'LIMIT', 'WHILE', 'BREAK', 'CONTINUE', 'SWITCH', #  'MODIFIER', 'DEFAULT', 'FACTOR'
 )
 VAL_KEYWORDS_TO_LOWER += ('Yes', 'No', 'YES', 'NO', 'FROM', "From")
-KEYWORDS_TO_LOWER_LIST += ('FROM', 'EFFECT', 'TRIGGER' )
+KEYWORDS_TO_LOWER_LIST += ('FROM', 'OWNER', 'EFFECT', 'TRIGGER' )
 
 # --- 4. Lowercase Keys ---
 def lowercase_keys(node_list):
@@ -384,16 +384,18 @@ def _is_negation_node(node):
     return False
 
 def _get_positive_form(node):
-    if node.get('key') == 'NOT':
+    # Positive form of NOT {A B} or NOR {A B} is just [A, B] as children of a NOR are implicitly OR'd
+    if node.get('key') in ('NOT', 'NOR'):
         return node.get('val', [])
-    if node.get('key') == 'NOR':
-        return [{'key': 'OR', 'op': '=', 'val': node.get('val', []), 'type': 'node'}]
+    # Positive form of NAND {A B} is AND {A B}
     if node.get('key') == 'NAND':
         return [{'key': 'AND', 'op': '=', 'val': node.get('val', []), 'type': 'node'}]
+    # Positive form of key = no is key = yes
     if node.get('val') == 'no':
         new_node = copy.deepcopy(node)
         new_node['val'] = 'yes'
         return [new_node]
+    # Positive form of A = { B = { C = no } } is A = { B = { C = yes } }
     if isinstance(node.get('val'), list):
         children_nodes = [n for n in node.get('val') if n['type'] == 'node']
         if len(children_nodes) == 1:
@@ -550,83 +552,96 @@ def optimize_node_list(node_list, parent_key=None):
                 i = 0
                 while i < len(node['val']):
                     child = node['val'][i]
-                    if child['type'] == 'node' and child.get('key') == key and isinstance(child.get('val'), list):
+                    
+                    hoist = False
+                    if child['type'] == 'node' and isinstance(child.get('val'), list):
+                        child_key = child.get('key')
+                        if child_key == key: # AND={AND}, OR={OR}, etc.
+                            hoist = True
+                        elif key == 'NOR' and child_key == 'OR': # NOR={OR}
+                            hoist = True
+                        elif key == 'NAND' and child_key == 'AND': # NAND={AND}
+                            hoist = True
+
+                    if hoist:
                         # Replace child with its own children
                         node['val'][i:i+1] = child['val']
                         changed_any = True
                         # Rescan from the same index `i` as new items were inserted
                         continue
                     i += 1
-
-    # Combine consecutive NOTs, 'no' values, and NORs/NANDs into a single block
-    new_list = []
-    i = 0
-    while i < len(node_list):
-        node = node_list[i]
-
-        is_candidate_node = _is_negation_node(node)
-        if is_candidate_node and node.get('key') == 'NOT':
-             child_val = node.get('val')
-             if (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
-                 is_candidate_node = False
-
-
-        if not is_candidate_node:
-            new_list.append(node)
-            i += 1
-            continue
-
-        # Found a potential start of a mergeable sequence. Look ahead for more.
-        sequence = [node]
-        j = i + 1
-        while j < len(node_list):
-            next_node = node_list[j]
-            is_comment = next_node['type'] == 'comment'
-            
-            is_candidate_next_node = _is_negation_node(next_node)
-            if is_candidate_next_node and next_node.get('key') == 'NOT':
-                child_val = next_node.get('val')
-                if (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
-                    is_candidate_next_node = False
-
-            if is_candidate_next_node or is_comment:
-                sequence.append(next_node)
-                j += 1
-            else:
-                break
-
-        node_items = [n for n in sequence if n['type'] == 'node']
-
-        # This conversion always requires a pre-existing 'NOT/NOR/NAND'
-        if len(node_items) > 1 and any(n.get('key') in ('NOT', 'NOR', 'NAND') for n in node_items):
-            # Merge the sequence into a single NOR/NAND block
-            combined_children = []
-            for item in sequence:
-                if item['type'] == 'comment':
-                    combined_children.append(item)
-                    continue
-                
-                combined_children.extend(_get_positive_form(item))
-
-            # In an OR context (OR, NOR, NOT parent), (NOT a) OR (NOT b) becomes NAND { a b }
-            # In an AND context (other parents), (NOT a) AND (NOT b) becomes NOR { a b }
-            new_key = 'NOR'
-            if parent_key in ('OR', 'NOR', 'NOT'):
-                new_key = 'NAND'
-
-            new_combined_node = {'key': new_key, 'op': '=', 'val': combined_children, 'type': 'node'}
-            new_list.append(new_combined_node)
-            changed_any = True
-            i = j # Move index past the processed sequence
+        # Combine consecutive NOTs, 'no' values, and NORs/NANDs into a single block
+        if parent_key in ('if', 'else_if', 'else'):
+            new_list = node_list
         else:
-            # Not enough nodes to merge, or the sequence only contains `key = no` nodes.
-            # Append just the first node and let the loop continue normally.
-            new_list.append(node)
-            i += 1
-    
-    node_list = new_list
-    new_list = []
+            new_list = []
+            i = 0
+            while i < len(node_list):
+                node = node_list[i]
 
+                is_candidate_node = _is_negation_node(node)
+                if is_candidate_node and node.get('key') == 'NOT':
+                     child_val = node.get('val')
+                     if (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
+                         is_candidate_node = False
+
+
+                if not is_candidate_node:
+                    new_list.append(node)
+                    i += 1
+                    continue
+
+                # Found a potential start of a mergeable sequence. Look ahead for more.
+                sequence = [node]
+                j = i + 1
+                while j < len(node_list):
+                    next_node = node_list[j]
+                    is_comment = next_node['type'] == 'comment'
+
+                    is_candidate_next_node = _is_negation_node(next_node)
+                    if is_candidate_next_node and next_node.get('key') == 'NOT':
+                        child_val = next_node.get('val')
+                        if (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
+                            is_candidate_next_node = False
+
+                    if is_candidate_next_node or is_comment:
+                        sequence.append(next_node)
+                        j += 1
+                    else:
+                        break
+
+                node_items = [n for n in sequence if n['type'] == 'node']
+
+                # This conversion always requires a pre-existing 'NOT/NOR/NAND'
+                if len(node_items) > 1 and any(n.get('key') in ('NOT', 'NOR', 'NAND') for n in node_items):
+                    # Merge the sequence into a single NOR/NAND block
+                    combined_children = []
+                    for item in sequence:
+                        if item['type'] == 'comment':
+                            combined_children.append(item)
+                            continue
+
+                        combined_children.extend(_get_positive_form(item))
+
+                    # In an OR context (OR, NOR, NOT parent), (NOT a) OR (NOT b) becomes NAND { a b }
+                    # In an AND context (other parents), (NOT a) AND (NOT b) becomes NOR { a b }
+                    new_key = 'NOR'
+                    if parent_key in ('OR', 'NOR', 'NOT'):
+                        new_key = 'NAND'
+
+                    new_combined_node = {'key': new_key, 'op': '=', 'val': combined_children, 'type': 'node'}
+                    new_list.append(new_combined_node)
+                    changed_any = True
+                    i = j # Move index past the processed sequence
+                else:
+                    # Not enough nodes to merge, or the sequence only contains `key = no` nodes.
+                    # Append just the first node and let the loop continue normally.
+                    new_list.append(node)
+                    i += 1
+
+        node_list = new_list
+
+    new_list = []
     for node in node_list:
         if node['type'] == 'comment': new_list.append(node); continue
         key = node.get('key', '')
@@ -970,7 +985,7 @@ def optimize_node_list(node_list, parent_key=None):
 # Define keys that should always be forced compact if they have no operator or are simple lists
 # force_compact_keys = {"atmosphere_color", "value"} # for 'key_val' , "hsv", "rgb", "rgb255"
 force_compact_keys = {"hsv", "rgb", "rgb255"} # for 'key_val'
-compact_nodes = ("_event", "switch", "tags", "NOT", "_technology", "_offset", "_flag", "flags", "_opinion_modifier", "_variable", "give_tech_no_error_effect") # Never LB if possible
+compact_nodes = ("_event", "switch", "tags", "NOT", "_technology", "_offset", "_flag", "flags", "_opinion_modifier", "_variable", "give_tech_no_error_effect", "colors") # Never LB if possible
 not_compact_nodes = ("cost", "upkeep", "produces", "else", "if", "else_if", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "settings", "while", "effect", "traits") # Always LB
 root_nodes = ("trigger", "pre_triggers", "modifier", "immediate", "ai_weight", "potential", "weight_modifier")
 normal_nodes = ("limit", "add_resource", "ai_chance", "traits", "civics") # If > 1 item LB
