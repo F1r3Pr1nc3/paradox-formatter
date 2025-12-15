@@ -1,6 +1,7 @@
 import re
 import copy
-import sys # Import sys here for execution context
+import sys
+from collections import defaultdict
 import json
 
 is_decimal_re = re.compile(r"^-?\d+(\.\d+)?$")
@@ -242,13 +243,13 @@ KEYWORDS_TO_LOWER_END = (
 )
 KEYWORDS_TO_LOWER = VAL_KEYWORDS_TO_LOWER = KEYWORDS_TO_LOWER_LIST = (
     # Scopes
-    'ROOT', 'PREV', 'FROMFROM', 'FROMFROMFROM', 'FROMFROMFROMFROM', 'THIS', 'Owner', 'Controller', "From", "FromFrom", "Root", "Prev",
+    'ROOT', 'PREV', 'FROMFROM', 'FROMFROMFROM', 'FROMFROMFROMFROM', 'THIS', 'Owner', 'Controller', "From", "FromFrom", "Root", "Prev"
 )
 KEYWORDS_TO_LOWER += (   # Flow Control & Commands
-    'IF', 'ELSE', 'ELSE_IF', 'LIMIT', 'WHILE', 'BREAK', 'CONTINUE', 'SWITCH', #  'MODIFIER', 'DEFAULT', 'FACTOR'
+    'BREAK', 'CONTINUE' #  'MODIFIER', 'DEFAULT', 'FACTOR'
 )
 VAL_KEYWORDS_TO_LOWER += ('Yes', 'No', 'YES', 'NO', 'FROM', "From")
-KEYWORDS_TO_LOWER_LIST += ('FROM', 'OWNER', 'EFFECT', 'TRIGGER' )
+KEYWORDS_TO_LOWER_LIST += ('FROM', 'OWNER', 'EFFECT', 'TRIGGER', 'SWITCH','IF', 'ELSE', 'ELSE_IF', 'LIMIT', 'WHILE' )
 
 # --- 4. Lowercase Keys ---
 def lowercase_keys(node_list):
@@ -322,7 +323,7 @@ def lowercase_yes_no_values(node_list):
                 if child_changed:
                     changed = True
             elif val in VAL_KEYWORDS_TO_LOWER:
-                print("ORIGINAL_VAL_KEY", val)
+                # print(f"ORIGINAL_VAL_KEY {val}: {node}") DEBUG
                 node['val'] = val.lower()
                 changed = True
 
@@ -380,12 +381,18 @@ def _is_negation_node(node):
     if isinstance(node.get('val'), list):
         children_nodes = [n for n in node.get('val') if n['type'] == 'node']
         if len(children_nodes) == 1:
-            return _is_negation_node(children_nodes[0])
+            child = children_nodes[0]
+            child_key = child.get('key')
+            if not child_key in ('if', 'else_if', 'else', 'trigger', 'limit') and not child_key.startswith(('any_','count_')):
+                return _is_negation_node(child)
     return False
 
 def _get_positive_form(node):
-    # Positive form of NOT {A B} or NOR {A B} is just [A, B] as children of a NOR are implicitly OR'd
-    if node.get('key') in ('NOT', 'NOR'):
+    # Positive form of NOT {A B} is just [A, B] as children of a NOT are implicitly AND'd
+    if node.get('key') == 'NOT':
+        return node.get('val', [])
+    # Positive form of NOR {A B} is just [A, B] as children of a NOR are implicitly OR'd
+    if node.get('key') == 'NOR':
         return node.get('val', [])
     # Positive form of NAND {A B} is AND {A B}
     if node.get('key') == 'NAND':
@@ -399,9 +406,15 @@ def _get_positive_form(node):
     if isinstance(node.get('val'), list):
         children_nodes = [n for n in node.get('val') if n['type'] == 'node']
         if len(children_nodes) == 1:
-            new_parent = copy.deepcopy(node)
-            new_parent['val'] = _get_positive_form(children_nodes[0])
-            return [new_parent]
+            child = children_nodes[0]
+            if child.get('key') == 'NOR':
+                new_parent = copy.deepcopy(node)
+                new_parent['val'] = [{'key': 'OR', 'op': '=', 'val': _get_positive_form(child), 'type': 'node'}]
+                return [new_parent]
+            else:
+                new_parent = copy.deepcopy(node)
+                new_parent['val'] = _get_positive_form(child)
+                return [new_parent]
     return []
 
 def optimize_node_list(node_list, parent_key=None):
@@ -552,7 +565,7 @@ def optimize_node_list(node_list, parent_key=None):
                 i = 0
                 while i < len(node['val']):
                     child = node['val'][i]
-                    
+
                     hoist = False
                     if child['type'] == 'node' and isinstance(child.get('val'), list):
                         child_key = child.get('key')
@@ -649,6 +662,58 @@ def optimize_node_list(node_list, parent_key=None):
             optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key)
             if child_changed: node['val'] = optimized_children; changed_any = True
 
+            # TODO: Merge sibling nodes with the same key inside OR/NOR blocks
+            # Example:
+            # NOR = {
+            #   has_modifier = slave_colony
+            #   has_modifier = penal_colony
+            #   owner = {
+            #       OR = {
+            #           is_gestalt = yes
+            #           is_megacorp = yes
+            #           is_memorialist_empire = yes
+            #           is_entropy_drinkers_empire = yes
+            #       }
+            #   }
+            #   owner = { is_ai = yes }
+            # }
+
+            # if key in ('OR', 'NOR'):
+            #     key_groups = defaultdict(list)
+            #     other_children = []
+
+            #     # Group nodes by key, separate others
+            #     for child in node['val']:
+            #         if child['type'] == 'node' and child.get('key') and isinstance(child.get('val'), list):
+            #             key_groups[child.get('key')].append(child)
+            #         else:
+            #             other_children.append(child)
+
+            #     merged_any = False
+            #     newly_merged_nodes = []
+            #     for k, group in key_groups.items():
+            #         if len(group) > 1:
+            #             merged_or_children = []
+            #             for g_child in group:
+            #                 # If a child is already an OR block, hoist its children
+            #                 is_inner_or = len(g_child['val']) == 1 and g_child['val'][0].get('key') == 'OR'
+            #                 if is_inner_or:
+            #                     merged_or_children.extend(g_child['val'][0]['val'])
+            #                 else:
+            #                     merged_or_children.extend(g_child['val'])
+
+            #             new_or_block = {'key': 'OR', 'op': '=', 'val': merged_or_children, 'type': 'node'}
+            #             merged_node = {'key': k, 'op': '=', 'val': [new_or_block], 'type': 'node'}
+            #             newly_merged_nodes.append(merged_node)
+            #             merged_any = True
+            #         else:
+            #             # Not a group, add back to the list of other children
+            #             other_children.extend(group)
+
+            #     if merged_any:
+            #         node['val'] = other_children + newly_merged_nodes
+            #         changed_any = True
+
             if key == 'AND':
                 unique_nodes = []
                 new_children_list = []
@@ -669,6 +734,22 @@ def optimize_node_list(node_list, parent_key=None):
                     node['val'] = new_children_list
                     changed_any = True
                     print("Removed duplicate children from AND block", file=sys.stderr)
+
+                children_nodes = [n for n in node['val'] if n['type'] == 'node']
+                # NOR <=> AND = { 'NO'/'NOT' ... }
+                if children_nodes and all((c.get('key') == 'NOT' and isinstance(c.get('val'), list)) or (c.get('val') == 'no') for c in children_nodes):
+                    new_children = []
+                    for child in children_nodes:
+                        if child.get('key') == 'NOT':
+                            new_children.extend([n for n in child.get('val', []) if n['type'] == 'node'])
+                        elif child.get('val') == 'no':
+                            new_child = copy.deepcopy(child)
+                            new_child['val'] = 'yes'
+                            new_children.append(new_child)
+                    node['key'] = 'NOR'
+                    node['val'] = new_children
+                    changed_any = True
+                    print("Created NOR from AND-NO/NOT structure", file=sys.stderr)
 
             if key in ('AND', 'OR', 'this'):
                 children_nodes = [n for n in node['val'] if n['type'] == 'node']
@@ -744,24 +825,7 @@ def optimize_node_list(node_list, parent_key=None):
                         if '_cm_open' in node: del node['_cm_open']
                         if '_cm_close' in node: del node['_cm_close']
 
-            if key == 'AND':
-                children_nodes = [n for n in node['val'] if n['type'] == 'node']
-                # NOR <=> AND = { 'NO'/'NOT' ... }
-                if children_nodes and all((c.get('key') == 'NOT' and isinstance(c.get('val'), list)) or (c.get('val') == 'no') for c in children_nodes):
-                    new_children = []
-                    for child in children_nodes:
-                        if child.get('key') == 'NOT':
-                            new_children.extend([n for n in child.get('val', []) if n['type'] == 'node'])
-                        elif child.get('val') == 'no':
-                            new_child = copy.deepcopy(child)
-                            new_child['val'] = 'yes'
-                            new_children.append(new_child)
-                    node['key'] = 'NOR'
-                    node['val'] = new_children
-                    changed_any = True
-                    print("Created NOR from AND-NO/NOT structure", file=sys.stderr)
-
-            if key == 'NOT':
+            elif key == 'NOT':
                 children_nodes = [n for n in node['val'] if n['type'] == 'node']
                 if len(children_nodes) > 1:
                     node['key'] = 'NOR'
@@ -810,7 +874,7 @@ def optimize_node_list(node_list, parent_key=None):
 
                                 changed_any = True
 
-            if key == 'OR':
+            elif key == 'OR':
                 # New optimization: (A AND B) OR (NOT B) => (NOT B) OR A
                 made_change_ab_not_b = True
                 while made_change_ab_not_b:
@@ -986,8 +1050,11 @@ def optimize_node_list(node_list, parent_key=None):
 # force_compact_keys = {"atmosphere_color", "value"} # for 'key_val' , "hsv", "rgb", "rgb255"
 force_compact_keys = {"hsv", "rgb", "rgb255"} # for 'key_val'
 compact_nodes = ("_event", "switch", "tags", "NOT", "_technology", "_offset", "_flag", "flags", "_opinion_modifier", "_variable", "give_tech_no_error_effect", "colors") # Never LB if possible
-not_compact_nodes = ("cost", "upkeep", "produces", "else", "if", "else_if", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "settings", "while", "effect", "traits") # Always LB
-root_nodes = ("trigger", "pre_triggers", "modifier", "immediate", "ai_weight", "potential", "weight_modifier")
+not_compact_nodes = (
+    "cost", "upkeep", "produces", "else", "if", "else_if", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect",
+    "settings", "while", "traits", "modify_species"
+) # Always LB
+# root_nodes = ("trigger", "pre_triggers", "modifier", "immediate", "ai_weight", "potential", "weight_modifier", "building_sets", "potential", "destroy_trigger", "resources")
 normal_nodes = ("limit", "add_resource", "ai_chance", "traits", "civics") # If > 1 item LB
 
 def should_be_compact(node):
@@ -1139,20 +1206,20 @@ def node_to_string(node, depth=0, be_compact=False):
                 # Find previous non-comment node to get its key for the user's rule
                 if add_space and is_block:
                     # Don't add space around nodes that should be compact
-                    if key not in root_nodes:
-                        add_space = False
-                    else:
-                        prev_node_real = None
-                        for j in range(i - 1, -1, -1):
-                            if children[j].get('type') != 'comment':
-                                prev_node_real = children[j]
-                                break
-                        if prev_node_real and isinstance(prev_node_real.get('val'), list):
-                            prev_key = prev_node_real.get('key')
-                            if key == prev_key:
-                                add_space = False
-                            elif prev_key not in root_nodes:
-                                add_space = False
+                    # if key not in root_nodes:
+                    #   add_space = False
+                    # else:
+                    prev_node_real = None
+                    for j in range(i - 1, -1, -1):
+                        if children[j].get('type') != 'comment':
+                            prev_node_real = children[j]
+                            break
+                    if prev_node_real and isinstance(prev_node_real.get('val'), list):
+                        prev_key = prev_node_real.get('key')
+                        if key == prev_key:
+                            add_space = False
+                        # elif prev_key not in root_nodes:
+                        #   add_space = False
                 if add_space:
                     lines.append("")
 
