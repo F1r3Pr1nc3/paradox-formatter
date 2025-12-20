@@ -1,13 +1,76 @@
+"""
+Logic Optimizer for Clausewitz/Paradox Scripting (Stellaris, etc.)
+
+This script parses, optimizes, and formats Paradox script files.
+It performs logical simplifications (De Morgan's laws, double negation removal,
+merging nested blocks), standardizes syntax (lowercasing specific keys), and
+formats the output with consistent indentation.
+
+It works as a standalone tool or as a module.
+"""
 import re
 import copy
 import sys
 from collections import defaultdict
 import json
 
+USE_COUNT_TRIGGERS = False # Dev option to switch between any_ and count_ triggers
+
 is_decimal_re = re.compile(r"^-?\d+(\.\d+)?$")
+negated_ops = {'>': '<=', '<': '>=', '>=': '<', '<=': '>', '!=': '=', '=': '!='}
+
+def _negate_numerical_comparison_recursively(node, dry_run=False):
+	"""
+	Takes a node and recursively traverses it.
+	If it finds a leaf that is a numerical comparison that can be negated,
+	it negates it (if dry_run is False) and returns True.
+	Returns True on success.
+	"""
+	key = node.get('key', '')
+	op = node.get('op')
+	val = node.get('val')
+
+	# Case 1: The node itself is a direct numerical comparison.
+	if not isinstance(val, list):
+		if op == '=':
+			# Applies only to `num_*` and `has_*` triggers.
+			# TODO: could be extended
+			if key.startswith(('has_', 'num_')) and is_decimal_re.match(str(val)):
+				# print(f"Found Comparison Node:\n{key} {val} {node}") # DEBUG
+				if not dry_run:
+					node['op'] = '>' # '!='
+				return True
+		elif op in negated_ops and is_decimal_re.match(str(val)):
+			# print(f"FOUND COMPARISON NODE:\n{key} {val} {node}") # DEBUG
+			if not dry_run:
+				node['op'] = negated_ops[op]
+			return True
+	# Case 2: The node is a block trigger containing a specific key to negate.
+	else:
+		children = [c for c in val if c['type'] == 'node']
+		# This is a "wide" search for a negatable leaf among direct children.
+		for child in children:
+			child_key = child.get('key')
+			child_op = child.get('op')
+			# Only flip if the key is *exactly* 'value' or 'count'.
+			if child_key in ('value', 'count') and child_op in negated_ops:
+				# print(f"FOUND COMPARISON CHILD NODE:\n{child_key} {child}") # DEBUG
+				if not dry_run:
+					child['op'] = negated_ops[child_op]
+				return True
+
+		# --- RECURSIVE STEP ---
+		# This is a "deep" search down a chain of single-child nodes.
+		# Recurse only if there's a single child and the current node is just a wrapper.
+		if len(children) == 1 and not key.startswith(('any_', 'count_')) and key not in NON_NEGATABLE_SCOPES:
+			return _negate_numerical_comparison_recursively(children[0], dry_run)
+
+	return False
+
 triggerScopes = r"leader|owner|controller|overlord|space_owner|(?:prev){1,4}|(?:from){1,4}|root|this|event_target:[\w@]+|owner_or_space_owner"
 SCOPES = triggerScopes + r"|design|megastructure|planet|ship|pop_group|fleet|cosmic_storm|capital_scope|sector_capital|capital_star|system_star|solar_system|star|orbit|army|ambient_object|species|owner_species|owner_main_species|founder_species|bypass|pop_faction|war|federation|starbase|deposit|sector|archaeological_site|first_contact|spy_network|espionage_operation|espionage_asset|agreement|situation|astral_rift"
 SCOPES_RE = re.compile(f"^(?:{SCOPES})$")
+RAW_BLOCKS = ('in_breach_of', 'switch', 'inverted_switch')
 
 # --- Comment Formatter ---
 def format_comment(val):
@@ -45,11 +108,11 @@ def tokenize(text):
 		elif match.group(4): t_type = 'op'; val = match.group(4)
 		elif match.group(5): t_type = 'word'; val = match.group(5)
 		else: continue
-		tokens.append({'type': t_type, 'val': val, 'line': current_line, 'pre': gap})
+		tokens.append({'type': t_type, 'val': val, 'line': current_line, 'pre': gap, 'start': start, 'end': end})
 	return tokens
 
 # --- 2. Parser ---
-def parse(tokens):
+def parse(tokens, text):
 	stack = []
 	current_list = []
 	i = 0
@@ -59,6 +122,50 @@ def parse(tokens):
 		token = tokens[i]
 		token_line = token['line']
 		token_val = token['val']
+
+		# --- START SWITCH BLOCK HANDLING ---
+		if token['type'] == 'word' and token_val in RAW_BLOCKS:
+			# Look ahead for `switch = {`
+			op_idx = i + 1
+			while op_idx < len(tokens) and tokens[op_idx]['type'] == 'comment':
+				op_idx += 1
+
+			if op_idx < len(tokens) and tokens[op_idx]['val'] == '=':
+				brace_idx = op_idx + 1
+				while brace_idx < len(tokens) and tokens[brace_idx]['type'] == 'comment':
+					brace_idx += 1
+
+				if brace_idx < len(tokens) and tokens[brace_idx]['val'] == '{':
+					# This is a switch block. Find matching brace.
+					brace_level = 1
+					start_token = token
+					end_token = None
+					scan_idx = brace_idx + 1
+
+					while scan_idx < len(tokens):
+						scan_token = tokens[scan_idx]
+						if scan_token['val'] == '{':
+							brace_level += 1
+						elif scan_token['val'] == '}':
+							brace_level -= 1
+
+						if brace_level == 0:
+							end_token = scan_token
+							break
+						scan_idx += 1
+
+					if end_token:
+						# Found it. Create raw_block node.
+						# The comments are already in current_list.
+						# We just need to create our raw node and clear the buffer.
+						preceding_comments_buffer = []
+
+						raw_text = text[start_token['start']:end_token['end']]
+						node = {'type': 'raw_block', 'val': raw_text}
+						current_list.append(node)
+						i = scan_idx + 1
+						continue
+		# --- END SWITCH BLOCK HANDLING ---
 
 		def get_inline_comment_and_offset(current_idx, current_line_num):
 			if current_idx + 1 < len(tokens):
@@ -352,6 +459,8 @@ def lowercase_yes_no_values(node_list):
 # --- 7. Optimize ---
 # Scopes that are NOT implicit AND blocks.
 EXPLICIT_LOGIC_KEYS = KEYWORDS_TO_UPPER = {'OR', 'NOR', 'NAND', 'NOT'}
+# Scopes that cannot have negations pushed into them
+NON_NEGATABLE_SCOPES = ( 'if', 'else_if', 'else', 'while', 'switch', 'calc_true_if' ) # , 'trigger', 'limit'
 # NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
 KEYWORDS_TO_UPPER.add('AND')
 
@@ -399,15 +508,19 @@ def _is_negation_node(node):
 		return True
 	if node.get('op') == '=' and node.get('val') == 'no':
 		return True
+
+	if _negate_numerical_comparison_recursively(node, dry_run=True):
+		return True
+
 	# To handle nested negations like `A = { B = no }`
 	if is_block:
-		if key.startswith(('any_','count_')): # key in ('trigger', 'limit') or
+		if key.startswith('any_'): # key in ('trigger', 'limit') or
 			return False
 		children_nodes = [n for n in node.get('val') if n['type'] == 'node']
 		if len(children_nodes) == 1:
 			child = children_nodes[0]
 			child_key = child.get('key')
-			if not child_key in ('if', 'else_if', 'else', 'trigger', 'limit') and not child_key.startswith(('any_','count_')):
+			if not child_key in NON_NEGATABLE_SCOPES and not child_key.startswith('any_'):
 				return _is_negation_node(child)
 	return False
 
@@ -415,30 +528,38 @@ def _get_positive_form(node):
 	# Positive form of NOT {A B} is just [A, B] as children of a NOT are implicitly AND'd
 	if node.get('key') == 'NOT':
 		return node.get('val', [])
-	# Positive form of NOR {A B} is just [A, B] as children of a NOR are implicitly OR'd
+	# Positive form of NOR {A B} is OR {A B}
 	if node.get('key') == 'NOR':
-		return node.get('val', [])
+		children = [c for c in node.get('val', []) if c['type'] == 'node']
+		if len(children) > 1:
+			return [{'key': 'OR', 'op': '=', 'val': node.get('val', []), 'type': 'node'}]
+		else:
+			return node.get('val', [])
 	# Positive form of NAND {A B} is AND {A B}
 	if node.get('key') == 'NAND':
 		return [{'key': 'AND', 'op': '=', 'val': node.get('val', []), 'type': 'node'}]
+
+	new_node = copy.deepcopy(node)
 	# Positive form of key = no is key = yes
 	if node.get('val') == 'no':
-		new_node = copy.deepcopy(node)
 		new_node['val'] = 'yes'
 		return [new_node]
+
+	# Handle numerical comparisons
+	if _negate_numerical_comparison_recursively(new_node, dry_run=False):
+		return [new_node]
+
 	# Positive form of A = { B = { C = no } } is A = { B = { C = yes } }
 	if isinstance(node.get('val'), list):
 		children_nodes = [n for n in node.get('val') if n['type'] == 'node']
 		if len(children_nodes) == 1:
 			child = children_nodes[0]
 			if child.get('key') == 'NOR':
-				new_parent = copy.deepcopy(node)
-				new_parent['val'] = [{'key': 'OR', 'op': '=', 'val': _get_positive_form(child), 'type': 'node'}]
-				return [new_parent]
+				new_node['val'] = [{'key': 'OR', 'op': '=', 'val': _get_positive_form(child), 'type': 'node'}]
+				return [new_node]
 			else:
-				new_parent = copy.deepcopy(node)
-				new_parent['val'] = _get_positive_form(child)
-				return [new_parent]
+				new_node['val'] = _get_positive_form(child)
+				return [new_node]
 	return []
 
 def optimize_node_list(node_list, parent_key=None):
@@ -470,9 +591,10 @@ def optimize_node_list(node_list, parent_key=None):
 		n1k = n1.get('key')
 		n2k = n2.get('key')
 		is_n1_logic = n1k in ('NOT', 'NOR')
-		is_n1_comp = n1.get('op') in ('<', '>', '<=', '>=', '!=') #, '=' too dangerous for now
+		# is_n1_comp = n1.get('op') in ('<', '>', '<=', '>=', '!=') #, '=' too dangerous for now
+		is_n1_comp = _negate_numerical_comparison_recursively(n1, dry_run=True)
+		is_n2_comp = _negate_numerical_comparison_recursively(n2, dry_run=True)
 		is_n2_logic = n2k in ('NOT', 'NOR')
-		is_n2_comp = n2.get('op') in ('<', '>', '<=', '>=', '!=') #, '=' too dangerous for now
 
 		# Case 1: (NOT/NOR) then (comparison)
 		if is_n1_logic and is_n2_comp:
@@ -488,7 +610,7 @@ def optimize_node_list(node_list, parent_key=None):
 					idx3 = temp_idx
 
 				if n3 and n3.get('key') in ('NOT', 'NOR'): # 3-node merge
-					negated_op = {'<': '>=', '>': '<=', '<=': '>', '>=': '<', '=': '!=', '!=': '='}.get(vo2)
+					negated_op = negated_ops.get(vo2)
 					negated_comp_node = {'key': n2['key'], 'op': negated_op, 'val': v2, 'type': 'node'}
 					new_nor_children = []
 					if isinstance(n1.get('val'), list): new_nor_children.extend(n1['val'])
@@ -502,7 +624,7 @@ def optimize_node_list(node_list, parent_key=None):
 					i = idx3 + 1
 					continue
 				else: # 2-node merge
-					negated_op = {'<': '>=', '>': '<=', '<=': '>', '>=': '<', '=': '!=', '!=': '='}.get(vo2)
+					negated_op = negated_ops.get(vo2)
 					negated_comp_node = {'key': n2['key'], 'op': negated_op, 'val': v2, 'type': 'node'}
 					new_nor_children = []
 					if isinstance(n1.get('val'), list): new_nor_children.extend(n1['val'])
@@ -519,7 +641,7 @@ def optimize_node_list(node_list, parent_key=None):
 			v1, vo1 = n1.get('val', ''), n1.get('op')
 			#  and n1k not in NO_TRIGGER_VAL and (vo1 != '=' or v1[0] == '@' or (v1[-1].isdigit() and is_decimal_re.match(v1)))
 			if v1 and isinstance(v1, str):
-				negated_op = {'<': '>=', '>': '<=', '<=': '>', '>=': '<', '=': '!=', '!=': '='}.get(vo1)
+				negated_op = negated_ops.get(vo1)
 				negated_comp_node = {'key': n1['key'], 'op': negated_op, 'val': v1, 'type': 'node'}
 				new_nor_children = [negated_comp_node]
 				for c_idx in range(i + 1, idx2): new_nor_children.append(node_list[c_idx])
@@ -602,13 +724,22 @@ def optimize_node_list(node_list, parent_key=None):
 
 					if hoist:
 						# Replace child with its own children
-						node['val'][i:i+1] = child['val']
+						new_children = []
+						if child.get('_cm_open'):
+							new_children.append({'type': 'comment', 'val': child.get('_cm_open')})
+
+						new_children.extend(child['val'])
+
+						if child.get('_cm_close'):
+							new_children.append({'type': 'comment', 'val': child.get('_cm_close')})
+
+						node['val'][i:i+1] = new_children
 						changed_any = True
 						# Rescan from the same index `i` as new items were inserted
 						continue
 					i += 1
 		# Combine consecutive NOTs, 'no' values, and NORs/NANDs into a single block
-		if parent_key in ('if', 'else_if', 'else'):
+		if parent_key in NON_NEGATABLE_SCOPES:
 			new_list = node_list
 		else:
 			new_list = []
@@ -621,7 +752,6 @@ def optimize_node_list(node_list, parent_key=None):
 					 child_val = node.get('val')
 					 if (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
 						 is_candidate_node = False
-
 
 				if not is_candidate_node:
 					new_list.append(node)
@@ -658,7 +788,23 @@ def optimize_node_list(node_list, parent_key=None):
 							combined_children.append(item)
 							continue
 
-						combined_children.extend(_get_positive_form(item))
+						positive_children = _get_positive_form(item)
+						cm_open = item.get('_cm_open')
+
+						if cm_open and positive_children:
+							if len(positive_children) == 1:
+								first_child = positive_children[0]
+								if first_child['type'] == 'node':
+									if isinstance(first_child.get('val'), list): # it's a block
+										first_child['_cm_open'] = first_child.get('_cm_open','') + cm_open
+									else: # it's a leaf
+										first_child['_cm_inline'] = first_child.get('_cm_inline','') + cm_open
+								else: # probably a comment, so add cm_open as another comment
+									combined_children.append({'type': 'comment', 'val': cm_open})
+							else: # multiple children from _get_positive_form (only from NOT {A B...})
+								combined_children.append({'type': 'comment', 'val': cm_open})
+
+						combined_children.extend(positive_children)
 
 					# In an OR context (OR, NOR, NOT parent), (NOT a) OR (NOT b) becomes NAND { a b }
 					# In an AND context (other parents), (NOT a) AND (NOT b) becomes NOR { a b }
@@ -683,11 +829,133 @@ def optimize_node_list(node_list, parent_key=None):
 		if node['type'] == 'comment': new_list.append(node); continue
 		key = node.get('key', '')
 		if isinstance(node.get('val'), list):
-			optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key)
-			if child_changed: node['val'] = optimized_children; changed_any = True
+			if key in RAW_BLOCKS:
+				optimized_children = node['val']
+				child_changed = False
+				continue
+			else:
+				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key)
+			if child_changed:
+				node['val'] = optimized_children; changed_any = True
+
+			key = node.get('key', '') # get fresh key
+			if key.startswith('any_'):
+				children = node.get('val', [])
+				count_comparison_node = None
+				for child in children:
+					if child.get('type') == 'node' and child.get('key') == 'count' and child.get('op') in ('<', '>', '<=', '>=', '=', '!='):
+						count_comparison_node = child
+						break
+				if count_comparison_node:
+					# This is an any_ node with a count condition. This is invalid syntax.
+					# Convert to a count_ node. The optimizer will then handle it (e.g. convert back to any_ if count > 0)
+					count_key = 'count_' + key[4:]
+					node['key'] = count_key
+					changed_any = True
+					print(f"Fixed invalid {key} with count condition to {count_key}", file=sys.stderr)
+					key = count_key # update key for following logic
+
+				elif USE_COUNT_TRIGGERS and isinstance(children, list):
+					# Convert any_ to count_ if USE_COUNT_TRIGGERS is True
+					count_key = 'count_' + key[4:]
+					limit_node = {'key': 'limit', 'op': '=', 'val': children, 'type': 'node'}
+					count_node = {'key': 'count', 'op': '>=', 'val': '1', 'type': 'node'}
+
+					node['key'] = count_key
+					node['val'] = [count_node, limit_node]
+					changed_any = True
+					print(f"Converted {key} to {count_key}", file=sys.stderr)
+					key = count_key
+
+			elif key.startswith('count_'):
+				children = node.get('val', [])
+				children_nodes = [n for n in children if n['type'] == 'node']
+
+				# 1. Try to convert to any_ if enabled
+				if not USE_COUNT_TRIGGERS:
+					count_comparison_node = None
+					is_negative_check = False
+					for child in children_nodes:
+						if child.get('key') == 'count':
+							op = child.get('op')
+							val = child.get('val')
+							# Positive Checks (Existing): count > 0, count >= 1, count != 0
+							if (op in ('>', '!=') and val == '0') or (op == '>=' and val == '1'):
+								count_comparison_node = child
+								break
+							# Negative Checks (New): count < 1, count <= 0, count = 0
+							elif (op == '<' and val == '1') or (op == '<=' and val == '0') or (op == '=' and val == '0'):
+								count_comparison_node = child
+								is_negative_check = True
+								break
+
+					if count_comparison_node:
+						limit_node = None
+						for child in children_nodes:
+							if child.get('key') == 'limit' and isinstance(child.get('val'), list):
+								limit_node = child
+								break
+
+						other_children = [c for c in children_nodes if c not in [count_comparison_node, limit_node]]
+
+						if limit_node and not other_children:
+							any_key = 'any_' + key[6:]
+							comments_from_count_block = [c for c in children if c['type'] == 'comment']
+
+							if is_negative_check:
+								# Convert to NOT = { any_... = { ... } }
+								any_node = {'key': any_key, 'op': '=', 'val': comments_from_count_block + limit_node.get('val'), 'type': 'node'}
+
+								node['key'] = 'NOT'
+								node['op'] = '='
+								node['val'] = [any_node]
+
+								# Preserve comments from the original count node
+								if node.get('_cm_open'): any_node['_cm_open'] = node['_cm_open']
+								if node.get('_cm_close'): any_node['_cm_close'] = node['_cm_close']
+								if node.get('_cm_inline'): any_node['_cm_inline'] = node['_cm_inline']
+								if node.get('_cm_preceding'): any_node['_cm_preceding'] = node['_cm_preceding']
+
+								# Clear comments on the new wrapper NOT node as they are moved to the inner ANY node,
+								# except maybe preceding ones? Usually wrapper takes the place of the old node.
+								if '_cm_open' in node: del node['_cm_open']
+								if '_cm_close' in node: del node['_cm_close']
+								if '_cm_inline' in node: del node['_cm_inline']
+								# _cm_preceding stays with the wrapper (node)
+
+								changed_any = True
+								print(f"Converted {key} (negative) to NOT = {{ {any_key} }}", file=sys.stderr)
+								# Key changed to NOT, so logic stops here for this node
+								# continue - DO NOT CONTINUE, allow append!
+							else:
+								# Positive check (Existing Logic)
+								node['key'] = any_key
+								node['op'] = '='
+								node['val'] = comments_from_count_block + limit_node.get('val')
+
+								changed_any = True
+								print(f"Converted {key} to {any_key}", file=sys.stderr)
+								key = any_key # update key for following logic
+
+				# 2. Ensure order of count vs limit if still count_
+				if key.startswith('count_') and isinstance(node.get('val'), list):
+					current_children = node['val']
+					count_idx = -1
+					limit_idx = -1
+					for idx, child in enumerate(current_children):
+						if child['type'] == 'node':
+							if child.get('key') == 'count':
+								count_idx = idx
+							elif child.get('key') == 'limit':
+								limit_idx = idx
+
+					if count_idx != -1 and limit_idx != -1 and count_idx > limit_idx:
+						count_node = current_children.pop(count_idx)
+						current_children.insert(limit_idx, count_node)
+						changed_any = True
 
 			## Merge sibling nodes with the same key inside OR/NOR blocks
-			if key in ('OR', 'NOR'):
+			elif key in ('OR', 'NOR'):
 				# Step 1: Identify mergeable groups and create merged nodes
 				merge_candidates = defaultdict(list) # key: [nodes to merge]
 				for child in node['val']:
@@ -878,47 +1146,222 @@ def optimize_node_list(node_list, parent_key=None):
 					changed_any = True
 				elif len(children_nodes) == 1:
 					child = children_nodes[0]
-					if child.get('key') == 'AND' and isinstance(child.get('val'), list):
-						node['key'] = 'NAND'
-						node['val'] = child['val']
-						changed_any = True
-						print("Created NAND from NOT-AND", file=sys.stderr)
-					# NOR <=> NOT = { OR ... }
-					elif child.get('key') == 'OR' and isinstance(child.get('val'), list):
-						node['key'] = 'NOR'
-						node['val'] = child['val']
-						changed_any = True
-						print("Created NOR from NOT-OR", file=sys.stderr)
-					# Simplification for `NOT = { key = yes }` to `key = no`
-					elif child.get('val') == 'yes' and not isinstance(child.get('val'), list):
-						node['key'] = child['key']
-						node['op'] = child['op']
-						node['val'] = 'no'
-						if '_cm_inline' in child: node['_cm_inline'] = child['_cm_inline']
-						if '_cm_open' in node: del node['_cm_open']
+
+					# NOT = { any_... } ---> count_... = { count = 0 limit = { ... } }
+					child_key = child.get('key', '')
+					if USE_COUNT_TRIGGERS and child_key.startswith('any_') and isinstance(child.get('val'), list):
+						cm_open = node.get('_cm_open') # Get comment
+						count_key = 'count_' + child_key[4:]
+						count_node = {'key': 'count', 'op': '=', 'val': '0', 'type': 'node'}
+						limit_node = {'key': 'limit', 'op': '=', 'val': child.get('val'), 'type': 'node'}
+
+						node['key'] = count_key
+						node['op'] = '='
+						node['val'] = [count_node, limit_node]
+
+						if cm_open:
+							node['_cm_open'] = cm_open # Put it back
+						elif '_cm_open' in node:
+							del node['_cm_open']
+
 						if '_cm_close' in node: del node['_cm_close']
 						changed_any = True
-					# Simplification for `NOT = { A = { B = yes } }` to `A = { B = no }`
-					elif isinstance(child.get('val'), list):
-						grandchildren = [gc for gc in child.get('val') if gc['type'] == 'node']
-						if len(grandchildren) == 1:
-							grandchild = grandchildren[0]
-							if grandchild.get('val') == 'yes' and not isinstance(grandchild.get('val'), list):
-								grandchild['val'] = 'no'
+						print(f"Converted NOT={{{child_key}}} to {count_key}", file=sys.stderr)
+					else:
+						# The NOT block is redundant. It can be replaced by its negated child.
+						child_copy = copy.deepcopy(child)
+						if _negate_numerical_comparison_recursively(child_copy):
+							# if we just created a count_... with count != 0, convert to any_
+							child_key = child_copy.get('key', '')
+							if child_key.startswith('count_') and isinstance(child_copy.get('val'), list):
+								children_nodes_2 = [n for n in child_copy['val'] if n['type'] == 'node']
+								count_comparison_node = None
+								limit_node = None
+								for child2 in children_nodes_2:
+									if child2.get('key') == 'count' and child2.get('op') in ('!=') and child2.get('val') == '0':
+										count_comparison_node = child2
+									if child2.get('key') == 'limit' and isinstance(child2.get('val'), list):
+										limit_node = child2
 
-								# Hoist child up to replace the NOT node
-								node['key'] = child['key']
-								node['op'] = child['op']
-								node['val'] = child['val']
+								other_children = [c for c in children_nodes_2 if c not in [count_comparison_node, limit_node]]
 
-								# Transfer comments
-								if '_cm_open' in child: node['_cm_open'] = child['_cm_open']
-								elif '_cm_open' in node: del node['_cm_open']
+								if count_comparison_node and limit_node and not other_children:
+									any_key = 'any_' + child_key[6:]
+									comments_from_count_block = [c for c in child_copy['val'] if c['type'] == 'comment']
+									child_copy['key'] = any_key
+									child_copy['op'] = '='
+									child_copy['val'] = comments_from_count_block + limit_node.get('val')
+									changed_any = True
+									print(f"Converted NOT={{{child_key}=0}} to {any_key}", file=sys.stderr)
 
-								if '_cm_close' in child: node['_cm_close'] = child['_cm_close']
-								elif '_cm_close' in node: del node['_cm_close']
+							# Hoist the entire modified structure up to replace the NOT node
+							cm_open = node.get('_cm_open')
+							if cm_open:
+								child_copy['_cm_open'] = cm_open + child_copy.get('_cm_open', '')
 
-								changed_any = True
+							# Replace the node's data with the child's data
+							for k in list(node.keys()):
+								if k not in ['type', '_cm_preceding']:
+									del node[k]
+							for k, v in child_copy.items():
+								if k not in ['type', '_cm_preceding']:
+									node[k] = v
+
+							print(f"Simplified NOT={{{child_key}}} by negating numerical comparison", file=sys.stderr)
+							changed_any = True
+						elif child.get('key') == 'AND' and isinstance(child.get('val'), list):
+							node['key'] = 'NAND'
+							node['val'] = child['val']
+							changed_any = True
+							print("Created NAND from NOT-AND", file=sys.stderr)
+						# Double Negation: NOT = { NOT = { ... } } -> ...
+						elif child.get('key') == 'NOT' and isinstance(child.get('val'), list):
+							# Replace NOT node with the content of the child NOT
+							# We need to hoist the child's children up
+							# We also need to merge comments
+							cm_open = node.get('_cm_open', '')
+							child_cm_open = child.get('_cm_open', '')
+
+							node['key'] = 'AND' # Temporary key, will be simplified if single child or merged
+							# Actually, if it's NOT { NOT { A B } }, it means A AND B.
+							# So we can just replace with the list of children of inner NOT.
+							# But wait, node is a single dict. We can't replace it with a list here easily
+							# without restructuring the parent list, which we can't access easily.
+							# BUT, we can turn this node into an AND (implicit) or just change key/val.
+
+							# If inner NOT has multiple children, they are ANDed.
+							# NOT { NOT { A B } } -> A AND B.
+							# So we can change this node to AND = { A B }.
+							# Optimizer later flattens ANDs.
+
+							node['key'] = 'AND'
+							node['op'] = '='
+							node['val'] = child['val']
+
+							if cm_open or child_cm_open:
+								node['_cm_open'] = (cm_open + ' ' + child_cm_open).strip()
+
+							if '_cm_close' in child: node['_cm_close'] = child['_cm_close']
+
+							changed_any = True
+							print("Removed double negation NOT-NOT", file=sys.stderr)
+
+						# NOR <=> NOT = { OR ... }
+						elif child.get('key') == 'OR' and isinstance(child.get('val'), list):
+							node['key'] = 'NOR'
+							node['val'] = child['val']
+							changed_any = True
+							print("Created NOR from NOT-OR", file=sys.stderr)
+						# Simplification for `NOT = { key = yes }` to `key = no`
+						elif child.get('val') == 'yes' and not isinstance(child.get('val'), list):
+							cm_open = node.get('_cm_open')
+							node['key'] = child['key']
+							node['op'] = child['op']
+							node['val'] = 'no'
+
+							new_inline = child.get('_cm_inline', '')
+							if cm_open:
+								new_inline = new_inline + cm_open
+
+							if new_inline:
+								node['_cm_inline'] = new_inline
+							elif '_cm_inline' in node:
+								del node['_cm_inline']
+
+							if '_cm_open' in node: del node['_cm_open']
+							if '_cm_close' in node: del node['_cm_close']
+							changed_any = True
+						# Simplification for `NOT = { key = no }` to `key = yes`
+						elif child.get('val') == 'no' and not isinstance(child.get('val'), list):
+							cm_open = node.get('_cm_open')
+							node['key'] = child['key']
+							node['op'] = child['op']
+							node['val'] = 'yes'
+
+							new_inline = child.get('_cm_inline', '')
+							if cm_open:
+								new_inline = new_inline + cm_open
+
+							if new_inline:
+								node['_cm_inline'] = new_inline
+							elif '_cm_inline' in node:
+								del node['_cm_inline']
+
+							if '_cm_open' in node: del node['_cm_open']
+							if '_cm_close' in node: del node['_cm_close']
+							changed_any = True
+						# Simplification for `NOT = { A = { B = yes } }` to `A = { B = no }`
+						elif isinstance(child.get('val'), list):
+							grandchildren = [gc for gc in child.get('val') if gc['type'] == 'node']
+							if len(grandchildren) == 1:
+								grandchild = grandchildren[0]
+								child_key = child.get('key', '')
+								# NOT = { scope = { OR = ... } } -> scope = { NOR = ... }
+								if grandchild.get('key') == 'OR' and isinstance(grandchild.get('val'), list) and not child_key.startswith('any_') and not child_key.startswith('count_') and child_key not in NON_NEGATABLE_SCOPES:
+									grandchild['key'] = 'NOR'
+									# Hoist child up to replace the NOT node
+									node['key'] = child['key']
+									node['op'] = child['op']
+									node['val'] = child['val']
+									# Transfer comments
+									if '_cm_open' in child: node['_cm_open'] = child['_cm_open']
+									elif '_cm_open' in node: del node['_cm_open']
+									if '_cm_close' in child: node['_cm_close'] = child['_cm_close']
+									elif '_cm_close' in node: del node['_cm_close']
+									changed_any = True
+									print("Created NOR from NOT-scope-OR", file=sys.stderr)
+								elif grandchild.get('val') == 'yes' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(('any_', 'count_')):
+									grandchild['val'] = 'no'
+
+									# Hoist child up to replace the NOT node
+									node['key'] = child['key']
+									node['op'] = child['op']
+									node['val'] = child['val']
+
+									# Transfer comments
+									if '_cm_open' in child: node['_cm_open'] = child['_cm_open']
+									elif '_cm_open' in node: del node['_cm_open']
+
+									if '_cm_close' in child: node['_cm_close'] = child['_cm_close']
+									elif '_cm_close' in node: del node['_cm_close']
+
+									changed_any = True
+								elif grandchild.get('val') == 'no' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(('any_', 'count_')):
+									grandchild['val'] = 'yes'
+
+									# Hoist child up to replace the NOT node
+									node['key'] = child['key']
+									node['op'] = child['op']
+									node['val'] = child['val']
+
+									# Transfer comments
+									if '_cm_open' in child: node['_cm_open'] = child['_cm_open']
+									elif '_cm_open' in node: del node['_cm_open']
+
+									if '_cm_close' in child: node['_cm_close'] = child['_cm_close']
+									elif '_cm_close' in node: del node['_cm_close']
+
+									changed_any = True
+
+			elif key == 'NAND':
+				children_nodes = [n for n in node['val'] if n['type'] == 'node']
+				if len(children_nodes) == 1:
+					node['key'] = 'NOT'
+					changed_any = True
+
+			elif key == 'owner':
+				children_nodes = [n for n in node['val'] if n['type'] == 'node']
+				if len(children_nodes) == 1:
+					child = children_nodes[0]
+					if child.get('key') in ('is_same_empire', 'is_same_value'):
+						node['key'] = 'is_owned_by'
+						node['op'] = child.get('op')
+						node['val'] = child.get('val')
+						if child.get('_cm_inline'): node['_cm_inline'] = child['_cm_inline']
+						if '_cm_open' in child: node['_cm_open'] = child['_cm_open'] # rare but possible
+						if '_cm_close' in child: node['_cm_close'] = child['_cm_close']
+						changed_any = True
+
 
 			elif key == 'OR':
 				# New optimization: (A AND B) OR (NOT B) => (NOT B) OR A
@@ -991,7 +1434,6 @@ def optimize_node_list(node_list, parent_key=None):
 
 				children = [n for n in node['val'] if n['type'] == 'node']
 
-
 				# NAND <=> OR = { '(NO)'/AND(\1NO/NOR)' ... }
 				# (NOT A) OR (A AND (NOT C))  <=> NAND = { A, C }
 				if len(children) == 2:
@@ -1051,7 +1493,7 @@ def optimize_node_list(node_list, parent_key=None):
 					print("Created NAND from OR-NOT structure", file=sys.stderr)
 
 				# NAND <=> OR = { 'NO'/'NOT' ... }
-				elif all(_is_negation_node(child) for child in children):
+				elif all(_is_negation_node(n) for n in children) and any(n.get('key') in ('NOT', 'NOR', 'NAND') for n in children):
 					new_children = []
 					for child in children:
 						new_children.extend(_get_positive_form(child))
@@ -1095,13 +1537,21 @@ def optimize_node_list(node_list, parent_key=None):
 # Define keys that should always be forced compact if they have no operator or are simple lists
 # force_compact_keys = {"atmosphere_color", "value"} # for 'key_val' , "hsv", "rgb", "rgb255"
 force_compact_keys = {"hsv", "rgb", "rgb255"} # for 'key_val'
-compact_nodes = ("_event", "switch", "tags", "NOT", "_technology", "_offset", "_flag", "flags", "_opinion_modifier", "_variable", "give_tech_no_error_effect", "colors") # Never LB if possible
+compact_nodes = (
+	"_event", "switch", "tags", "NOT", "_technology", "_offset", "_flag", "flags", "_opinion_modifier", "_variable", "give_tech_no_error_effect", "colors",
+	"_opinion_modifier", "add_ship_type_from_debris"
+) # Never LB if possible
 not_compact_nodes = (
-	"cost", "upkeep", "produces", "else", "if", "else_if", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect",
-	"settings", "while", "traits", "modify_species", "inline_scripts"
+	"cost", "upkeep", "produces", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect",
+	"settings"
 ) # Always LB
+not_compact_nodes += NON_NEGATABLE_SCOPES
+
 # root_nodes = ("trigger", "pre_triggers", "modifier", "immediate", "ai_weight", "potential", "weight_modifier", "building_sets", "potential", "destroy_trigger", "resources")
-normal_nodes = ("limit", "add_resource", "ai_chance", "traits", "civics") # If > 1 item LB
+normal_nodes = (
+	"limit", 'trigger', "add_resource", "ai_chance", "traits", "civics", "ethos", "inline_scripts", "modify_species", "change_species_characteristics",
+	"custom_tooltip"
+) # If > 1 item LB
 
 def should_be_compact(node):
 	if not isinstance(node.get('val'), list): return False
@@ -1109,7 +1559,7 @@ def should_be_compact(node):
 	if not children: return True
 	key = str(node.get('key', ''))
 
-	if any(child['type'] == 'comment' for child in children): return False
+	if any(child.get('type') in ('comment', 'raw_block') for child in children): return False
 	if node.get('_cm_open'): return False
 
 	# Special Case: hsv { ... } etc. (operator-less blocks)
@@ -1126,7 +1576,12 @@ def should_be_compact(node):
 	if children_len > 2 and not key.endswith(compact_nodes): return False
 	# Ignore detailed child check
 	if (children_len == 1 and
-		(key.isdigit() or key.endswith(compact_nodes))
+		(
+			key.endswith(compact_nodes) or
+			(
+				key[-1].isdigit() and is_decimal_re.match(key)
+			)
+		)
 		and should_be_compact(logic_children[0])
 		):
 		return True
@@ -1135,7 +1590,7 @@ def should_be_compact(node):
 	cm_close = node.get('_cm_close', '') # Strong indicator it could be compact
 	cm_inline = ''
 	# if cm_close: return True
-	total_len = len(key) / 2 + 4
+	total_len = len(key) / 2 + 5
 
 	# 1 - 2 child nodes
 	for child in logic_children:
@@ -1162,10 +1617,13 @@ def should_be_compact(node):
 		# Check 3: Length Calculation
 		k_len = len(ckey)
 		v_len = len(str(val))
-		child_len = k_len + v_len + 3
-		if children_len != 1 and not cm_close:
-			if v_len > 9 and k_len > 29: return False
-			if child_len > 48: return False
+		child_len = k_len + v_len + 4
+		if not cm_close:
+			if children_len == 1:
+				if child_len > 60: return False
+			else:
+				if v_len > 9 and k_len > 29: return False
+				if child_len > 48: return False
 		total_len += child_len
 
 	if key.endswith(compact_nodes):
@@ -1176,7 +1634,14 @@ def should_be_compact(node):
 
 def node_to_string(node, depth=0, be_compact=False):
 	indent = "\t" * depth
-	if node['type'] == 'comment': return f"{indent}{node['val'].rstrip()}"
+	if node.get('type') == 'comment':
+		return f"{indent}{node['val'].rstrip()}"
+	if node.get('type') == 'raw_block':
+		content_to_indent = node['val'].rstrip().rstrip('}').rstrip()
+		# Ensure the raw content always ends with a newline
+		# to make the replace operation consistent for the final '}'
+		content_to_indent += f'\n{indent}}}'
+		return f"{indent}{content_to_indent}"
 
 	key = node.get('key')
 	op = node.get('op', '=')
@@ -1252,20 +1717,21 @@ def node_to_string(node, depth=0, be_compact=False):
 				# Find previous non-comment node to get its key for the user's rule
 				if add_space and is_block:
 					# Don't add space around nodes that should be compact
-					# if key not in root_nodes:
-					#   add_space = False
-					# else:
-					prev_node_real = None
-					for j in range(i - 1, -1, -1):
-						if children[j].get('type') != 'comment':
-							prev_node_real = children[j]
-							break
-					if prev_node_real and isinstance(prev_node_real.get('val'), list):
-						prev_key = prev_node_real.get('key')
-						if key == prev_key:
-							add_space = False
-						# elif prev_key not in root_nodes:
-						#   add_space = False
+					if key in NON_NEGATABLE_SCOPES or key.endswith(compact_nodes):
+					  add_space = False
+					else:
+						prev_node_real = None
+						for j in range(i - 1, -1, -1):
+							if children[j].get('type') != 'comment':
+								prev_node_real = children[j]
+								break
+						if prev_node_real and isinstance(prev_node_real.get('val'), list):
+							prev_key = prev_node_real.get('key')
+							if key == prev_key:
+								add_space = False
+							# elif prev_key and (prev_key in NON_NEGATABLE_SCOPES or prev_key.endswith(compact_nodes)):
+							#   add_space = False
+
 				if add_space:
 					lines.append("")
 
@@ -1281,6 +1747,8 @@ def node_to_string(node, depth=0, be_compact=False):
 	else:
 		val = node.get('val')
 		cm_inline = node.get('_cm_inline', "")
+		if cm_inline and not cm_inline[0].isspace():
+			cm_inline = " " + cm_inline
 		if val is None: return f"{indent}{key}{cm_inline}"
 		return f"{indent}{key} {op} {val}{cm_inline}"
 
@@ -1295,17 +1763,25 @@ def block_to_string(block_list):
 	for node in block_list:
 		is_comment_node = node['type'] == 'comment'
 		comment_is_header = False
+		is_var = False
+		key = None
+		is_block = False
+
 		if is_comment_node:
 			comment_text = node['val'][1:]
 			comment_is_header = comment_text.startswith(('#','}',' }'))
 		else:
 			comment_is_header = False
-		is_var = False
-		if node['type'] == 'node' and not isinstance(node['val'], list) :
-			is_var = node['key'].startswith('@')
-		is_block = isinstance(node['val'], list)
+			if node['type'] == 'node':
+				is_block = isinstance(node['val'], list)
+				key = node.get('key', '')
+				if key and not is_block and key.startswith('@'):
+					is_var = True
+			elif node['type'] == 'raw_block':
+				is_block = True
 
 		if (
+			# (not is_block or not key in NON_NEGATABLE_SCOPES) and
 			(not is_comment_node and not is_var and
 			(not prev_was_comment or prev_was_header)) or
 			(comment_is_header and not prev_was_comment and i) or
@@ -1333,12 +1809,18 @@ def process_text(content):
 		original_content = content
 		content = content.replace('\r\n', '\n')
 		tokens = tokenize(content)
-		tree = parse(tokens)
+		tree = parse(tokens, content)
 
 		keys_lowercased = lowercase_keys(tree)
 		keys_uppercased = uppercase_keys(tree)
 		yes_no_lowercased = lowercase_yes_no_values(tree)
 		optimized_tree, logic_changed = optimize_node_list(tree)
+
+		# Loop for stability (max 3 passes)
+		passes = 0
+		while logic_changed and passes < 3:
+			optimized_tree, logic_changed = optimize_node_list(optimized_tree)
+			passes += 1
 
 		# Always re-generate the string to apply formatting changes.
 		new_content = block_to_string(optimized_tree)
