@@ -14,7 +14,32 @@ import sys
 from collections import defaultdict
 import json
 
-USE_COUNT_TRIGGERS = False # Dev option to switch between any_ and count_ triggers
+USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
+USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
+NON_ANY_TRIGGERS = { # TODO unfortunataly unharmonized triggers
+	"count_deposits",
+	"count_end_cycle_systems",
+	"count_exact_species",
+	"count_owned_pop_amount",
+	"count_owned_workforce",
+	"count_potential_war_participants",
+	"count_ship_size_in_system",
+	"count_species",
+	"count_species_traits",
+	"count_starbase_buildings",
+	"count_starbase_modules",
+	"count_starbase_sizes",
+	"count_systems_with_aura",
+	"count_tech_options",
+	"count_unlocked_active_accords",
+	"count_used_naval_cap",
+	"count_war_participants",
+}
+NON_COUNT_TRIGGERS = { # TODO unfortunataly unharmonized triggers or scripted triggers
+	"any_valid_lured_critter_fleet",
+	"any_available_random_trait_by_tag"
+	"any_available_random_trait_by_tag_evopred"
+}
 
 is_decimal_re = re.compile(r"^-?\d+(\.\d+)?$")
 negated_ops = {'>': '<=', '<': '>=', '>=': '<', '<=': '>', '!=': '=', '=': '!='}
@@ -855,8 +880,8 @@ def optimize_node_list(node_list, parent_key=None):
 					print(f"Fixed invalid {key} with count condition to {count_key}", file=sys.stderr)
 					key = count_key # update key for following logic
 
-				elif USE_COUNT_TRIGGERS and isinstance(children, list):
-					# Convert any_ to count_ if USE_COUNT_TRIGGERS is True
+				elif USE_COUNT_TRIGGERS and not USE_ANY_TRIGGERS and isinstance(children, list) and key not in NON_COUNT_TRIGGERS:
+					# Convert any_ to count_
 					count_key = 'count_' + key[4:]
 					limit_node = {'key': 'limit', 'op': '=', 'val': children, 'type': 'node'}
 					count_node = {'key': 'count', 'op': '>=', 'val': '1', 'type': 'node'}
@@ -872,7 +897,7 @@ def optimize_node_list(node_list, parent_key=None):
 				children_nodes = [n for n in children if n['type'] == 'node']
 
 				# 1. Try to convert to any_ if enabled
-				if not USE_COUNT_TRIGGERS:
+				if USE_ANY_TRIGGERS and not USE_COUNT_TRIGGERS and key not in NON_ANY_TRIGGERS:
 					count_comparison_node = None
 					is_negative_check = False
 					for child in children_nodes:
@@ -1149,7 +1174,7 @@ def optimize_node_list(node_list, parent_key=None):
 
 					# NOT = { any_... } ---> count_... = { count = 0 limit = { ... } }
 					child_key = child.get('key', '')
-					if USE_COUNT_TRIGGERS and child_key.startswith('any_') and isinstance(child.get('val'), list):
+					if USE_COUNT_TRIGGERS and child_key.startswith('any_') and isinstance(child.get('val'), list) and not child_key == 'any_owned_pop_amount':
 						cm_open = node.get('_cm_open') # Get comment
 						count_key = 'count_' + child_key[4:]
 						count_node = {'key': 'count', 'op': '=', 'val': '0', 'type': 'node'}
