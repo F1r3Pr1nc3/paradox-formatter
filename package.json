@@ -1,7 +1,7 @@
 {
     "name": "paradox-script-formatter",
     "displayName": "PDX Script Formatter",
-    "description": "A robust, whitespace-aware formatter for Paradox Interactive game scripts, powered by a sophisticated Python library for advanced logic optimization.",
+    "description": "A robust, whitespace-aware formatter for Paradox Interactive game scripts. Features logical simplifications (De Morgan's laws), syntax standardization, and consistent indentation.",
     "private": true,
     "icon": "icon.png",
     "publisher": "f1r3pr1nc3",
@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.3.7",
+    "version": "0.3.8",
     "preview": true,
     "repository": {
         "type": "git",
@@ -28,6 +28,16 @@
         "documentRangeFormattingProvider": "true"
     },
     "contributes": {
+        "configuration": {
+            "title": "PDX Script Formatter",
+            "properties": {
+                "paradox-formatter.noCompact": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Disable compacting of short blocks (e.g. { a = b })."
+                }
+            }
+        },
         "formatters": [
             {
                 "language": "paradox",

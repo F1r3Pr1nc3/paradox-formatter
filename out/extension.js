@@ -24,8 +24,14 @@ function formatWithPythonBridge(text) {
         // Correct path relative to the extension's root directory
         const scriptPath = path.join(__dirname, '..', 'bin', 'logic_optimizer.py'); 
 
+        const config = vscode.workspace.getConfiguration('paradox-formatter');
+        const args = [scriptPath];
+        if (config.get('noCompact')) {
+            args.push('--no-compact');
+        }
+
         // 1. Spawn Python process
-        const pythonProcess = spawn(pythonPath, [scriptPath]);
+        const pythonProcess = spawn(pythonPath, args);
         
         let stdout = '';
         let stderr = '';

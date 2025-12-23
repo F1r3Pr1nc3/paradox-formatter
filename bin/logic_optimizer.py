@@ -13,9 +13,12 @@ import copy
 import sys
 from collections import defaultdict
 import json
+import argparse
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
+NO_COMPACT = False
+
 NON_ANY_TRIGGERS = { # TODO unfortunataly unharmonized triggers
 	"count_deposits",
 	"count_end_cycle_systems",
@@ -95,7 +98,7 @@ def _negate_numerical_comparison_recursively(node, dry_run=False):
 triggerScopes = r"leader|owner|controller|overlord|space_owner|(?:prev){1,4}|(?:from){1,4}|root|this|event_target:[\w@]+|owner_or_space_owner"
 SCOPES = triggerScopes + r"|design|megastructure|planet|ship|pop_group|fleet|cosmic_storm|capital_scope|sector_capital|capital_star|system_star|solar_system|star|orbit|army|ambient_object|species|owner_species|owner_main_species|founder_species|bypass|pop_faction|war|federation|starbase|deposit|sector|archaeological_site|first_contact|spy_network|espionage_operation|espionage_asset|agreement|situation|astral_rift"
 SCOPES_RE = re.compile(f"^(?:{SCOPES})$")
-RAW_BLOCKS = ('in_breach_of', 'switch', 'inverted_switch')
+RAW_BLOCKS = ('in_breach_of', 'inverted_switch') # 'switch' gets handled hybrid
 
 # --- Comment Formatter ---
 def format_comment(val):
@@ -109,7 +112,8 @@ def tokenize(text):
 	# Captures: comments, quoted strings, operators, words, newlines
 
 	# Added group 3: (@\[[\s\S]*?\]) to capture @[ ... ] blocks including newlines
-	token_pattern = re.compile(r'(#.*)|("[^"]*")|(@\\?\[[^\]]+\])|(!=|>=|<=|[=\{\}<>!])|([^\s=\{\}<>!]+)|\n')
+	# Added group 4: ([[ ... ]]) to capture [[!parameter]] style blocks
+	token_pattern = re.compile(r'(#.*)|("[^"]*")|(@\\?\[[^\]]+\])|(\[\[!?[^\]]*\])|(!=|>=|<=|[=\{\}<>!])|([^\s=\{\}<>!]+)|\n')
 
 	tokens = []
 	current_line = 1
@@ -130,8 +134,12 @@ def tokenize(text):
 			val = match.group(3)
 			# Fix line counting if the math block spans multiple lines
 			current_line += val.count('\n')
-		elif match.group(4): t_type = 'op'; val = match.group(4)
-		elif match.group(5): t_type = 'word'; val = match.group(5)
+		elif match.group(4):
+			t_type = 'word'
+			val = match.group(4)
+			current_line += val.count('\n')
+		elif match.group(5): t_type = 'op'; val = match.group(5)
+		elif match.group(6): t_type = 'word'; val = match.group(6)
 		else: continue
 		tokens.append({'type': t_type, 'val': val, 'line': current_line, 'pre': gap, 'start': start, 'end': end})
 	return tokens
@@ -211,6 +219,10 @@ def parse(tokens, text):
 			if current_list and current_list[-1].get('val') == 'PENDING_BLOCK':
 				parent_node = current_list[-1]
 				parent_node['val'] = finished_list
+				# Capture raw text for switch nodes to allow length comparison later
+				if parent_node.get('key') == 'switch' and '_token_start' in parent_node:
+					parent_node['_raw'] = text[parent_node['_token_start']:token['end']]
+
 				cm, offset = get_inline_comment_and_offset(i, token_line)
 				if cm:
 					parent_node['_cm_close'] = cm
@@ -284,7 +296,7 @@ def parse(tokens, text):
 					# If it was an immediate block (hsv {), we set op to None/Empty
 					op_for_node = operator_found if is_key_op else None
 
-					node = {'key': token_val, 'op': op_for_node, 'val': 'PENDING_BLOCK', 'type': 'node'}
+					node = {'key': token_val, 'op': op_for_node, 'val': 'PENDING_BLOCK', 'type': 'node', '_token_start': token['start']}
 					if preceding_comments_buffer:
 						node['_cm_preceding'] = [c['val'] for c in preceding_comments_buffer]
 						preceding_comments_buffer = []
@@ -310,7 +322,7 @@ def parse(tokens, text):
 						break # Found next non-comment token
 
 					if block_follows:
-						node = {'key': token_val, 'op': operator_found, 'val_key': val_token['val'], 'val': 'PENDING_BLOCK', 'type': 'node'}
+						node = {'key': token_val, 'op': operator_found, 'val_key': val_token['val'], 'val': 'PENDING_BLOCK', 'type': 'node', '_token_start': token['start']}
 						if preceding_comments_buffer:
 							node['_cm_preceding'] = [c['val'] for c in preceding_comments_buffer]
 							preceding_comments_buffer = []
@@ -922,14 +934,15 @@ def optimize_node_list(node_list, parent_key=None):
 								break
 
 						other_children = [c for c in children_nodes if c not in [count_comparison_node, limit_node]]
-
+						# limit node is required
 						if limit_node and not other_children:
 							any_key = 'any_' + key[6:]
 							comments_from_count_block = [c for c in children if c['type'] == 'comment']
+							limit_val = limit_node.get('val') if limit_node else []
 
 							if is_negative_check:
 								# Convert to NOT = { any_... = { ... } }
-								any_node = {'key': any_key, 'op': '=', 'val': comments_from_count_block + limit_node.get('val'), 'type': 'node'}
+								any_node = {'key': any_key, 'op': '=', 'val': comments_from_count_block + limit_val, 'type': 'node'}
 
 								node['key'] = 'NOT'
 								node['op'] = '='
@@ -956,7 +969,7 @@ def optimize_node_list(node_list, parent_key=None):
 								# Positive check (Existing Logic)
 								node['key'] = any_key
 								node['op'] = '='
-								node['val'] = comments_from_count_block + limit_node.get('val')
+								node['val'] = comments_from_count_block + limit_val
 
 								changed_any = True
 								print(f"Converted {key} to {any_key}", file=sys.stderr)
@@ -1518,7 +1531,7 @@ def optimize_node_list(node_list, parent_key=None):
 					print("Created NAND from OR-NOT structure", file=sys.stderr)
 
 				# NAND <=> OR = { 'NO'/'NOT' ... }
-				elif all(_is_negation_node(n) for n in children) and any(n.get('key') in ('NOT', 'NOR', 'NAND') for n in children):
+				elif all(_is_negation_node(n) for n in children) and not all(_negate_numerical_comparison_recursively(n, dry_run=True) for n in children):
 					new_children = []
 					for child in children:
 						new_children.extend(_get_positive_form(child))
@@ -1682,6 +1695,7 @@ def node_to_string(node, depth=0, be_compact=False):
 		# --- Compacting Logic (Based on Heuristic and Depth) ---
 		# 1. Determine Compacting Rule based on Key and Depth
 		if (
+			not NO_COMPACT and
 			not be_compact and
 			depth and
 			(depth > 1 or key.endswith(compact_nodes)) and
@@ -1767,7 +1781,20 @@ def node_to_string(node, depth=0, be_compact=False):
 			prev_is_block = is_block
 
 		lines.append(f"{indent}}}{cm_close}")
-		return "\n".join(lines)
+		formatted_str = "\n".join(lines)
+
+		if node.get('_raw') and node.get('key') == 'switch':
+			raw_val = node['_raw']
+			# Simple line count check
+			if raw_val.count('\n') < formatted_str.count('\n'):
+				# Use raw content, ensuring closing brace is indented correctly
+				content_to_indent = raw_val.rstrip().rstrip('}').rstrip()
+				content_to_indent += f'\n{indent}}}'
+				# The raw text (from start token) likely doesn't have indentation for the first line,
+				# so we prepend it.
+				return f"{indent}{content_to_indent}"
+
+		return formatted_str
 
 	else:
 		val = node.get('val')
@@ -1862,6 +1889,12 @@ def process_text(content):
 		return content, False
 
 if __name__ == "__main__":
+	parser = argparse.ArgumentParser()
+	parser.add_argument("--no-compact", action="store_true", help="Disable compacting of nodes")
+	args, unknown = parser.parse_known_args()
+
+	NO_COMPACT = args.no_compact
+
 	stdin_content = sys.stdin.read()
 	new_content, changed = process_text(stdin_content)
 	output = {
