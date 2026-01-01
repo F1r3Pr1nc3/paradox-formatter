@@ -123,7 +123,13 @@ class ParadoxDocumentFormatter {
 
     // This is the JS formatter for range (selection) formatting
     formatRange(document, range, options) {
-        const fullText = document.getText(range);
+        // Expand range to cover full lines to ensure correct indentation context
+        const start = new vscode.Position(range.start.line, 0);
+        const endLine = document.lineAt(range.end.line);
+        const end = new vscode.Position(range.end.line, endLine.text.length);
+        const extendedRange = new vscode.Range(start, end);
+
+        const fullText = document.getText(extendedRange);
         const placeholderMap = new Map();
 
         // A. Protect strings/comments so regex doesn't mangle them
@@ -182,7 +188,7 @@ class ParadoxDocumentFormatter {
             }
         }
 
-        return [vscode.TextEdit.replace(range, resultLines.join('\n'))];
+        return [vscode.TextEdit.replace(extendedRange, resultLines.join('\n'))];
     }
 
     // This now uses the Python bridge for whole-document formatting
