@@ -147,6 +147,24 @@ To ensure this formatter is used automatically when you save a file, you need to
 }
 ```
 
+### Enable "Format On Paste"
+
+To automatically format code when pasting, add these settings to your `settings.json`:
+
+```json
+"[paradox]": {
+    "editor.defaultFormatter": "f1r3pr1nc3.paradox-script-formatter",
+    "editor.formatOnPaste": true
+},
+"[stellaris]": {
+    "editor.defaultFormatter": "f1r3pr1nc3.paradox-script-formatter",
+    "editor.formatOnPaste": true
+}
+```
+
+**Troubleshooting Tips:**
+If it doesn't format automatically, check the global setting: Search settings for `Format On Paste` and ensure it is checked.
+
 -----
 
 ## 🤝 Contributing
