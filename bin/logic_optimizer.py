@@ -98,7 +98,8 @@ def _negate_numerical_comparison_recursively(node, dry_run=False):
 triggerScopes = r"leader|owner|controller|overlord|space_owner|(?:prev){1,4}|(?:from){1,4}|root|this|event_target:[\w@]+|owner_or_space_owner"
 SCOPES = triggerScopes + r"|design|megastructure|planet|ship|pop_group|fleet|cosmic_storm|capital_scope|sector_capital|capital_star|system_star|solar_system|star|orbit|army|ambient_object|species|owner_species|owner_main_species|founder_species|bypass|pop_faction|war|federation|starbase|deposit|sector|archaeological_site|first_contact|spy_network|espionage_operation|espionage_asset|agreement|situation|astral_rift"
 SCOPES_RE = re.compile(f"^(?:{SCOPES})$")
-RAW_BLOCKS = ('in_breach_of', 'inverted_switch') # 'switch' gets handled hybrid
+# 'switch' gets handled hybrid; can't contain trigger nodes like 'calc_true_if'
+RAW_BLOCKS = ('in_breach_of', 'inverted_switch')
 
 # --- Comment Formatter ---
 def format_comment(val):
@@ -496,10 +497,11 @@ def lowercase_yes_no_values(node_list):
 # --- 7. Optimize ---
 # Scopes that are NOT implicit AND blocks.
 EXPLICIT_LOGIC_KEYS = KEYWORDS_TO_UPPER = {'OR', 'NOR', 'NAND', 'NOT'}
+EXPLICIT_LOGIC_KEYS.add('calc_true_if')
+KEYWORDS_TO_UPPER.add('AND')
 # Scopes that cannot have negations pushed into them
 NON_NEGATABLE_SCOPES = ( 'if', 'else_if', 'else', 'while', 'switch', 'calc_true_if' ) # , 'trigger', 'limit'
 # NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
-KEYWORDS_TO_UPPER.add('AND')
 
 def _is_negation(n1, n2):
 	# Internal helper to check for negation, with recursion guard
@@ -649,6 +651,7 @@ def optimize_node_list(node_list, parent_key=None):
 				if n3 and n3.get('key') in ('NOT', 'NOR'): # 3-node merge
 					negated_op = negated_ops.get(vo2)
 					negated_comp_node = {'key': n2['key'], 'op': negated_op, 'val': v2, 'type': 'node'}
+					if '_cm_inline' in n2: negated_comp_node['_cm_inline'] = n2['_cm_inline']
 					new_nor_children = []
 					if isinstance(n1.get('val'), list): new_nor_children.extend(n1['val'])
 					for c_idx in range(i + 1, idx2): new_nor_children.append(node_list[c_idx])
@@ -663,6 +666,7 @@ def optimize_node_list(node_list, parent_key=None):
 				else: # 2-node merge
 					negated_op = negated_ops.get(vo2)
 					negated_comp_node = {'key': n2['key'], 'op': negated_op, 'val': v2, 'type': 'node'}
+					if '_cm_inline' in n2: negated_comp_node['_cm_inline'] = n2['_cm_inline']
 					new_nor_children = []
 					if isinstance(n1.get('val'), list): new_nor_children.extend(n1['val'])
 					for c_idx in range(i + 1, idx2): new_nor_children.append(node_list[c_idx])
@@ -680,6 +684,7 @@ def optimize_node_list(node_list, parent_key=None):
 			if v1 and isinstance(v1, str):
 				negated_op = negated_ops.get(vo1)
 				negated_comp_node = {'key': n1['key'], 'op': negated_op, 'val': v1, 'type': 'node'}
+				if '_cm_inline' in n1: negated_comp_node['_cm_inline'] = n1['_cm_inline']
 				new_nor_children = [negated_comp_node]
 				for c_idx in range(i + 1, idx2): new_nor_children.append(node_list[c_idx])
 				if isinstance(n2.get('val'), list): new_nor_children.extend(n2['val'])
@@ -1009,22 +1014,47 @@ def optimize_node_list(node_list, parent_key=None):
 
 						# Find and skip comment nodes between group members, they will be handled via _cm_preceding
 						node_indices_in_group = sorted([i for i, child in enumerate(node['val']) if id(child) in map(id, group)])
+						
+						# Skip comments preceding the first node in the group (they are moved inside via _cm_preceding)
+						if node_indices_in_group:
+							first_idx = node_indices_in_group[0]
+							back_idx = first_idx - 1
+							while back_idx >= 0 and node['val'][back_idx]['type'] == 'comment':
+								nodes_to_skip_ids.add(id(node['val'][back_idx]))
+								back_idx -= 1
+						
+						# Create a map of index to comments preceding it (that are being skipped)
+						skipped_comments_by_index = defaultdict(list)
 						for i in range(len(node_indices_in_group) - 1):
 							start = node_indices_in_group[i]
 							end = node_indices_in_group[i+1]
 							for j in range(start + 1, end):
 								if node['val'][j]['type'] == 'comment':
 									nodes_to_skip_ids.add(id(node['val'][j]))
+									skipped_comments_by_index[end].append(node['val'][j]['val'])
 
 						first_child_id_in_group = id(group[0])
 
-						for g_child in group:
+						for idx, g_child in enumerate(group):
 							nodes_to_skip_ids.add(id(g_child))
 
 							# Add preceding comments as comment nodes inside the new block
-							if g_child.get('_cm_preceding'):
+							# ONLY for the first node, as subsequent nodes' comments are caught by skipped_comments_by_index
+							if idx == 0 and g_child.get('_cm_preceding'):
 								for c_text in g_child.get('_cm_preceding'):
 									merged_or_children_inner.append({'type': 'comment', 'val': c_text})
+							
+							# Add skipped separate comment nodes (unless it's the first node, whose comments stay outside or handled by _cm_preceding)
+							original_index = -1
+							# Find the original index of this child
+							for i, child in enumerate(node['val']):
+								if id(child) == id(g_child):
+									original_index = i
+									break
+							
+							if original_index in skipped_comments_by_index:
+								for c_val in skipped_comments_by_index[original_index]:
+									merged_or_children_inner.append({'type': 'comment', 'val': c_val})
 
 							is_inner_or = len(g_child['val']) == 1 and g_child['val'][0].get('key') == 'OR'
 							if is_inner_or:
@@ -1042,10 +1072,9 @@ def optimize_node_list(node_list, parent_key=None):
 
 						new_or_block = {'key': 'OR', 'op': '=', 'val': merged_or_children_inner, 'type': 'node'}
 						final_merged_node = {'key': k, 'op': '=', 'val': [new_or_block], 'type': 'node'}
-
-						# Keep preceding comment of the first node in the group for the final merged node
-						if group and group[0].get('_cm_preceding'):
-							final_merged_node['_cm_preceding'] = group[0]['_cm_preceding']
+						
+						# We intentionally do NOT move _cm_preceding to final_merged_node here, 
+						# because we moved it INSIDE the block above.
 
 						final_merged_nodes_by_id[first_child_id_in_group] = final_merged_node
 						changed_any = True
@@ -1104,7 +1133,7 @@ def optimize_node_list(node_list, parent_key=None):
 					print("Created NOR from AND-NO/NOT structure", file=sys.stderr)
 
 			if key in ('AND', 'OR', 'this'):
-				children_nodes = [n for n in node['val'] if n['type'] == 'node']
+				children_nodes = [n for n in node['val'] if n['type'] == 'node'] # , 'raw_block'
 				if len(children_nodes) == 1:
 					# The AND/OR is redundant. Replace it with its children, preserving comments.
 					new_children = []
@@ -1455,13 +1484,15 @@ def optimize_node_list(node_list, parent_key=None):
 									and_block_found = True
 								elif is_not_b:
 									new_or_children.append(not_B_node)
-									new_or_children.extend(A_to_insert)
+									# We don't append A_to_insert here, we wait until we find the AND block
 									other_node_found = True
 								else:
 									new_or_children.append(or_child)
 							else:
 								if is_and and not and_block_found:
-									and_block_found = True # Skip
+									# Found the AND block, and we already found !B earlier
+									new_or_children.extend(A_to_insert)
+									and_block_found = True
 								elif is_not_b and not other_node_found:
 									other_node_found = True # Skip
 								elif not is_and and not is_not_b:
@@ -1533,8 +1564,11 @@ def optimize_node_list(node_list, parent_key=None):
 				# NAND <=> OR = { 'NO'/'NOT' ... }
 				elif all(_is_negation_node(n) for n in children) and not all(_negate_numerical_comparison_recursively(n, dry_run=True) for n in children):
 					new_children = []
-					for child in children:
-						new_children.extend(_get_positive_form(child))
+					for item in node['val']:
+						if item['type'] == 'comment':
+							new_children.append(item)
+						else:
+							new_children.extend(_get_positive_form(item))
 					node['key'] = 'NAND'
 					node['val'] = new_children
 					changed_any = True
@@ -1756,8 +1790,8 @@ def node_to_string(node, depth=0, be_compact=False):
 				# Find previous non-comment node to get its key for the user's rule
 				if add_space and is_block:
 					# Don't add space around nodes that should be compact
-					if key in NON_NEGATABLE_SCOPES or key.endswith(compact_nodes):
-					  add_space = False
+					if key in NON_NEGATABLE_SCOPES or key.endswith(compact_nodes) or key in KEYWORDS_TO_UPPER:
+						add_space = False
 					else:
 						prev_node_real = None
 						for j in range(i - 1, -1, -1):
@@ -1768,8 +1802,15 @@ def node_to_string(node, depth=0, be_compact=False):
 							prev_key = prev_node_real.get('key')
 							if key == prev_key:
 								add_space = False
-							# elif prev_key and (prev_key in NON_NEGATABLE_SCOPES or prev_key.endswith(compact_nodes)):
-							#   add_space = False
+							elif prev_key and (prev_key in NON_NEGATABLE_SCOPES or prev_key.endswith(compact_nodes) or prev_key in KEYWORDS_TO_UPPER):
+								add_space = False
+						else:
+							if prev_node_real.get('key') in ("exists", "optimize_memory" ):
+								add_space = False
+							# 	print("NO SPACE for:", prev_node_real)
+							# else:
+							# 	print("SPACE for:", prev_node_real)
+
 
 				if add_space:
 					lines.append("")
