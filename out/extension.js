@@ -108,7 +108,16 @@ class ParadoxDocumentFormatter {
 
         // Add newlines around { and }
         // Case: "name = {"  ->  "name = {\n"
-        text = text.replace(/\s*\{\s*/g, ' {\n');
+        // Modified to keep inline comments on the same line: "name = { # comment" -> "name = { # comment"
+        text = text.replace(/\s*\{(\s*)(__COM_\d+__)?/g, (match, spaces, comment) => {
+            if (comment && !spaces.includes('\n')) {
+                return ' { ' + comment;
+            }
+            if (comment) {
+                return ' {\n' + comment;
+            }
+            return ' {\n';
+        });
         // Case: "}"  ->  "\n}"
         text = text.replace(/\s*\}\s*/g, '\n}\n');
 
