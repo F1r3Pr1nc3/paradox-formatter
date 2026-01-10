@@ -14,33 +14,42 @@ function getIndent(level, options) {
 /**
  * Executes the Python formatter script and returns the formatted content.
  * @param {string} text - The raw document text to format.
+ * @param {boolean|undefined} forceCompact - If defined, overrides the noCompact setting. True = force compact, False = force no-compact.
  * @returns {Promise<{content: string, changed: boolean}>}
  */
-function formatWithPythonBridge(text) {
+function formatWithPythonBridge(text, forceCompact) {
     return new Promise((resolve, reject) => {
         // NOTE: Adjust pythonPath if necessary (e.g., 'python3' or a path to a virtual environment)
-        const pythonPath = 'py'; 
-        
+        const pythonPath = 'py';
+
         // Correct path relative to the extension's root directory
-        const scriptPath = path.join(__dirname, '..', 'bin', 'logic_optimizer.py'); 
+        const scriptPath = path.join(__dirname, '..', 'bin', 'logic_optimizer.py');
 
         const config = vscode.workspace.getConfiguration('paradox-formatter');
         const args = [scriptPath];
-        if (config.get('noCompact')) {
+
+        let noCompact = false;
+        if (typeof forceCompact === 'boolean') {
+            noCompact = !forceCompact;
+        } else {
+            noCompact = config.get('noCompact');
+        }
+
+        if (noCompact) {
             args.push('--no-compact');
         }
 
         // 1. Spawn Python process
         const pythonProcess = spawn(pythonPath, args);
-        
+
         let stdout = '';
         let stderr = '';
-        
+
         // 2. Capture stdout (formatted result)
         pythonProcess.stdout.on('data', (data) => {
             stdout += data.toString();
         });
-        
+
         // 3. Capture stderr (errors from Python)
         pythonProcess.stderr.on('data', (data) => {
             stderr += data.toString();
@@ -52,7 +61,7 @@ function formatWithPythonBridge(text) {
                 console.error(`Python script exited with code ${code}. Stderr: ${stderr}`);
                 // Reject promise but still resolve with original content to avoid blocking VSCode
                 vscode.window.showErrorMessage(`Stellaris Formatter failed: ${stderr}`);
-                return resolve({ content: text, changed: false }); 
+                return resolve({ content: text, changed: false });
             }
 
             try {
@@ -104,7 +113,7 @@ class ParadoxDocumentFormatter {
     // 3. Expander: Inserts newlines for structure
     expandOneLineBlock(text) {
         // Ensure space around =
-        text = text.replace(/\s*=\s*/g, ' = ');
+        text = text.replace(/(?<![<>\!])\s*=\s*/g, ' = ');
 
         // Add newlines around { and }
         // Case: "name = {"  ->  "name = {\n"
@@ -138,6 +147,9 @@ class ParadoxDocumentFormatter {
         const end = new vscode.Position(range.end.line, endLine.text.length);
         const extendedRange = new vscode.Range(start, end);
 
+        const config = vscode.workspace.getConfiguration('paradox-formatter');
+        const noCompact = config.get('noCompact');
+
         const fullText = document.getText(extendedRange);
         const placeholderMap = new Map();
 
@@ -145,7 +157,13 @@ class ParadoxDocumentFormatter {
         let safeText = this.protectContent(fullText, placeholderMap);
 
         // B. Expand structure (Insert newlines)
-        let expandedText = this.expandOneLineBlock(safeText);
+        let expandedText = safeText;
+        if (noCompact) {
+            expandedText = this.expandOneLineBlock(safeText);
+        } else {
+            // Minimal formatting for compact mode: just normalize spacing around =
+            expandedText = expandedText.replace(/(?<![<>\!])\s*=\s*/g, ' = ');
+        }
 
         // C. Split into lines for indentation
         let lines = expandedText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -217,7 +235,7 @@ class ParadoxDocumentFormatter {
     }
 
     // This uses the old JS formatter for selection formatting
-    provideDocumentRangeFormattingEdits(document, range, options) {
+    async provideDocumentRangeFormattingEdits(document, range, options) {
         return this.formatRange(document, range, options);
     }
 }

@@ -11,6 +11,7 @@ It works as a standalone tool or as a module.
 import re
 import copy
 import sys
+import io
 from collections import defaultdict
 import json
 import argparse
@@ -1014,7 +1015,7 @@ def optimize_node_list(node_list, parent_key=None):
 
 						# Find and skip comment nodes between group members, they will be handled via _cm_preceding
 						node_indices_in_group = sorted([i for i, child in enumerate(node['val']) if id(child) in map(id, group)])
-						
+
 						# Skip comments preceding the first node in the group (they are moved inside via _cm_preceding)
 						if node_indices_in_group:
 							first_idx = node_indices_in_group[0]
@@ -1022,7 +1023,7 @@ def optimize_node_list(node_list, parent_key=None):
 							while back_idx >= 0 and node['val'][back_idx]['type'] == 'comment':
 								nodes_to_skip_ids.add(id(node['val'][back_idx]))
 								back_idx -= 1
-						
+
 						# Create a map of index to comments preceding it (that are being skipped)
 						skipped_comments_by_index = defaultdict(list)
 						for i in range(len(node_indices_in_group) - 1):
@@ -1043,7 +1044,7 @@ def optimize_node_list(node_list, parent_key=None):
 							if idx == 0 and g_child.get('_cm_preceding'):
 								for c_text in g_child.get('_cm_preceding'):
 									merged_or_children_inner.append({'type': 'comment', 'val': c_text})
-							
+
 							# Add skipped separate comment nodes (unless it's the first node, whose comments stay outside or handled by _cm_preceding)
 							original_index = -1
 							# Find the original index of this child
@@ -1051,7 +1052,7 @@ def optimize_node_list(node_list, parent_key=None):
 								if id(child) == id(g_child):
 									original_index = i
 									break
-							
+
 							if original_index in skipped_comments_by_index:
 								for c_val in skipped_comments_by_index[original_index]:
 									merged_or_children_inner.append({'type': 'comment', 'val': c_val})
@@ -1072,8 +1073,8 @@ def optimize_node_list(node_list, parent_key=None):
 
 						new_or_block = {'key': 'OR', 'op': '=', 'val': merged_or_children_inner, 'type': 'node'}
 						final_merged_node = {'key': k, 'op': '=', 'val': [new_or_block], 'type': 'node'}
-						
-						# We intentionally do NOT move _cm_preceding to final_merged_node here, 
+
+						# We intentionally do NOT move _cm_preceding to final_merged_node here,
 						# because we moved it INSIDE the block above.
 
 						final_merged_nodes_by_id[first_child_id_in_group] = final_merged_node
@@ -1930,6 +1931,14 @@ def process_text(content):
 		return content, False
 
 if __name__ == "__main__":
+	# Force UTF-8 for stdin/stdout to handle unicode correctly across platforms/locales
+	if sys.version_info >= (3, 7):
+		sys.stdin.reconfigure(encoding='utf-8')
+		sys.stdout.reconfigure(encoding='utf-8')
+	else:
+		sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+		sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--no-compact", action="store_true", help="Disable compacting of nodes")
 	args, unknown = parser.parse_known_args()

@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.4.0",
+    "version": "0.4.1",
     "preview": true,
     "repository": {
         "type": "git",
@@ -35,6 +35,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Disable compacting of short blocks (e.g. { a = b })."
+                },
+                "paradox-formatter.formatOnPaste": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable formatting when pasting or formatting selection."
                 }
             }
         },
