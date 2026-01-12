@@ -637,7 +637,7 @@ def optimize_node_list(node_list, parent_key=None):
 		is_n2_logic = n2k in ('NOT', 'NOR')
 
 		# Case 1: (NOT/NOR) then (comparison)
-		if is_n1_logic and is_n2_comp:
+		if is_n1_logic and is_n2_comp and parent_key not in ('OR', 'NOR'):
 			v2, vo2 = n2.get('val', ''), n2.get('op')
 			# and n2k not in NO_TRIGGER_VAL and (vo2 != '=' or v2[0] == '@' or (v2[-1].isdigit() and is_decimal_re.match(v2)))
 			if v2 and isinstance(v2, str):
@@ -679,7 +679,7 @@ def optimize_node_list(node_list, parent_key=None):
 					continue
 
 		# Case 2: (comparison) then (NOT/NOR)
-		elif is_n1_comp and is_n2_logic:
+		elif is_n1_comp and is_n2_logic and parent_key not in ('OR', 'NOR'):
 			v1, vo1 = n1.get('val', ''), n1.get('op')
 			#  and n1k not in NO_TRIGGER_VAL and (vo1 != '=' or v1[0] == '@' or (v1[-1].isdigit() and is_decimal_re.match(v1)))
 			if v1 and isinstance(v1, str):
