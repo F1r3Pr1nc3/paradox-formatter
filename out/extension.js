@@ -86,17 +86,21 @@ class ParadoxDocumentFormatter {
     // 1. Tokenizer: Protects strings and comments to prevent formatting them
     protectContent(text, placeholderMap) {
         let counter = 0;
-        // Protect Strings "..."
-        text = text.replace(/"(\\.|[^"\\])*"/g, (match) => {
-            const key = `__STR_${counter++}__`;
-            placeholderMap.set(key, match);
-            return key;
-        });
-        // Protect Comments #...
-        text = text.replace(/#.*/g, (match) => {
-            const key = `__COM_${counter++}__`;
-            placeholderMap.set(key, match);
-            return key;
+        // Protect Strings and Comments in one pass to avoid nesting
+        // Group 1: Strings "..." (using non-capturing group for content)
+        // Group 2: Comments #...
+        text = text.replace(/("(?:\\.|[^"\\])*")|(#.*)/g, (match, strMatch, comMatch) => {
+            if (strMatch) {
+                const key = `__STR_${counter++}__`;
+                placeholderMap.set(key, match);
+                return key;
+            }
+            if (comMatch) {
+                const key = `__COM_${counter++}__`;
+                placeholderMap.set(key, match);
+                return key;
+            }
+            return match;
         });
         return text;
     }
