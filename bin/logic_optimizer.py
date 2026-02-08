@@ -18,6 +18,7 @@ import argparse
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
+CAN_MERGE_SCOPES = False # Dev option to allow merging of scopes like owner, system, etc. (with some safeguards)
 NO_COMPACT = False
 
 NON_ANY_TRIGGERS = { # TODO unfortunataly unharmonized triggers
@@ -47,6 +48,48 @@ NON_COUNT_TRIGGERS = { # TODO unfortunataly unharmonized triggers or scripted tr
 
 is_decimal_re = re.compile(r"^-?\d+(\.\d+)?$")
 negated_ops = {'>': '<=', '<': '>=', '>=': '<', '<=': '>', '!=': '=', '=': '!='}
+
+
+triggerScopes = r"leader|owner|controller|overlord|space_owner|(?:prev){1,4}|(?:from){1,4}|root|this|event_target:[\w@]+|owner_or_space_owner"
+SCOPES = triggerScopes + r"|design|megastructure|planet|ship|pop_group|fleet|cosmic_storm|capital_scope|sector_capital|capital_star|system_star|solar_system|star|orbit|army|ambient_object|species|owner_species|owner_main_species|founder_species|bypass|pop_faction|war|federation|starbase|deposit|sector|archaeological_site|first_contact|spy_network|espionage_operation|espionage_asset|agreement|situation|astral_rift"
+# 'switch' gets handled hybrid; can't contain trigger nodes like 'calc_true_if'
+RAW_BLOCKS = ('in_breach_of', '')
+HYBRID_RAW_BLOCKS = ('switch', 'inverted_switch') # , 'random_list' TODO
+RAW_BLOCKS = RAW_BLOCKS + HYBRID_RAW_BLOCKS
+
+KEYWORDS_TO_LOWER_START = (
+	'ROOT.', 'PREV.', 'FROM.', 'OWNER.', 'CONTROLLER.'
+)
+KEYWORDS_TO_LOWER_END = (
+	'.ROOT', '.PREV', '.FROM', '.OWNER', '.CONTROLLER'
+)
+KEYWORDS_TO_LOWER = VAL_KEYWORDS_TO_LOWER = KEYWORDS_TO_LOWER_LIST = (
+	# Scopes
+	'ROOT', 'PREV', 'FROMFROM', 'FROMFROMFROM', 'FROMFROMFROMFROM', 'THIS', 'Owner', 'Controller', "From", "FromFrom", "Root", "Prev"
+)
+KEYWORDS_TO_LOWER += (   # Flow Control & Commands
+	'BREAK', 'CONTINUE' #  'MODIFIER', 'DEFAULT', 'FACTOR'
+)
+VAL_KEYWORDS_TO_LOWER += ('Yes', 'No', 'YES', 'NO', 'FROM', "From")
+KEYWORDS_TO_LOWER_LIST += ('FROM', 'OWNER', 'EFFECT', 'TRIGGER', 'SWITCH','IF', 'ELSE', 'ELSE_IF', 'LIMIT', 'WHILE' )
+
+# Scopes that are NOT implicit AND blocks.
+EXPLICIT_LOGIC_KEYS = KEYWORDS_TO_UPPER = {'OR', 'NOR', 'NAND', 'NOT'}
+EXPLICIT_LOGIC_KEYS.add('calc_true_if')
+KEYWORDS_TO_UPPER.add('AND')
+# Scopes that cannot have negations pushed into them
+NON_NEGATABLE_SCOPES = ( 'if', 'else_if', 'else', 'while', 'switch', 'inverted_switch', 'calc_true_if' ) # , 'trigger', 'limit'
+# NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
+
+# SAFE_MERGE_PARENTS = {
+# 	'AND', 'NAND', 'NOT',
+# 	'trigger', 'limit', 'potential', 'allow', 'pre_triggers',
+# 	'if', 'else_if', 'else', 'while',
+# 	'effect', 'immediate', 'init_effect',
+# 	'modifier', 'ai_weight', 'weight_modifier'
+# }
+
+SCOPES_RE = re.compile(f"^(?:{SCOPES})$")
 
 def _negate_numerical_comparison_recursively(node, dry_run=False):
 	"""
@@ -95,12 +138,6 @@ def _negate_numerical_comparison_recursively(node, dry_run=False):
 			return _negate_numerical_comparison_recursively(children[0], dry_run)
 
 	return False
-
-triggerScopes = r"leader|owner|controller|overlord|space_owner|(?:prev){1,4}|(?:from){1,4}|root|this|event_target:[\w@]+|owner_or_space_owner"
-SCOPES = triggerScopes + r"|design|megastructure|planet|ship|pop_group|fleet|cosmic_storm|capital_scope|sector_capital|capital_star|system_star|solar_system|star|orbit|army|ambient_object|species|owner_species|owner_main_species|founder_species|bypass|pop_faction|war|federation|starbase|deposit|sector|archaeological_site|first_contact|spy_network|espionage_operation|espionage_asset|agreement|situation|astral_rift"
-SCOPES_RE = re.compile(f"^(?:{SCOPES})$")
-# 'switch' gets handled hybrid; can't contain trigger nodes like 'calc_true_if'
-RAW_BLOCKS = ('in_breach_of', 'inverted_switch')
 
 # --- Comment Formatter ---
 def format_comment(val):
@@ -222,7 +259,7 @@ def parse(tokens, text):
 				parent_node = current_list[-1]
 				parent_node['val'] = finished_list
 				# Capture raw text for switch nodes to allow length comparison later
-				if parent_node.get('key') == 'switch' and '_token_start' in parent_node:
+				if parent_node.get('key') in HYBRID_RAW_BLOCKS and '_token_start' in parent_node:
 					parent_node['_raw'] = text[parent_node['_token_start']:token['end']]
 
 				cm, offset = get_inline_comment_and_offset(i, token_line)
@@ -401,22 +438,6 @@ def _extract_common_and_children(and_children_nodes):
 
 	return common_nodes, modified_and_children
 
-KEYWORDS_TO_LOWER_START = (
-	'ROOT.', 'PREV.', 'FROM.', 'OWNER.', 'CONTROLLER.'
-)
-KEYWORDS_TO_LOWER_END = (
-	'.ROOT', '.PREV', '.FROM', '.OWNER', '.CONTROLLER'
-)
-KEYWORDS_TO_LOWER = VAL_KEYWORDS_TO_LOWER = KEYWORDS_TO_LOWER_LIST = (
-	# Scopes
-	'ROOT', 'PREV', 'FROMFROM', 'FROMFROMFROM', 'FROMFROMFROMFROM', 'THIS', 'Owner', 'Controller', "From", "FromFrom", "Root", "Prev"
-)
-KEYWORDS_TO_LOWER += (   # Flow Control & Commands
-	'BREAK', 'CONTINUE' #  'MODIFIER', 'DEFAULT', 'FACTOR'
-)
-VAL_KEYWORDS_TO_LOWER += ('Yes', 'No', 'YES', 'NO', 'FROM', "From")
-KEYWORDS_TO_LOWER_LIST += ('FROM', 'OWNER', 'EFFECT', 'TRIGGER', 'SWITCH','IF', 'ELSE', 'ELSE_IF', 'LIMIT', 'WHILE' )
-
 # --- 4. Lowercase Keys ---
 def lowercase_keys(node_list):
 	"""
@@ -496,14 +517,6 @@ def lowercase_yes_no_values(node_list):
 	return changed
 
 # --- 7. Optimize ---
-# Scopes that are NOT implicit AND blocks.
-EXPLICIT_LOGIC_KEYS = KEYWORDS_TO_UPPER = {'OR', 'NOR', 'NAND', 'NOT'}
-EXPLICIT_LOGIC_KEYS.add('calc_true_if')
-KEYWORDS_TO_UPPER.add('AND')
-# Scopes that cannot have negations pushed into them
-NON_NEGATABLE_SCOPES = ( 'if', 'else_if', 'else', 'while', 'switch', 'calc_true_if' ) # , 'trigger', 'limit'
-# NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
-
 def _is_negation(n1, n2):
 	# Internal helper to check for negation, with recursion guard
 	def _is_negation_recursive(node1, node2, depth=0):
@@ -609,7 +622,7 @@ def _has_text(node):
 				return True
 	return False
 
-def optimize_node_list(node_list, parent_key=None):
+def optimize_node_list(node_list, parent_key=None, level=0):
 	changed_any = False
 	# New logic for NOT/comparison/NOR merge
 	i = 0
@@ -728,30 +741,43 @@ def optimize_node_list(node_list, parent_key=None):
 	# Safely merge sibling scopes like OR and AND, depending on the parent
 	merged_list = []
 	keys_to_merge_indices = {}
+	if parent_key and parent_key != 'calc_true_if':
+		for node in node_list:
+			if node['type'] == 'node' and isinstance(node.get('val'), list):
+				key = node.get('key')
+				can_merge = False
+				if parent_key not in ('OR', 'NOR'):
+					if key == 'AND':
+						can_merge = True
+					elif CAN_MERGE_SCOPES and level > 2 and key != 'planet' and SCOPES_RE.match(key):
+						can_merge = True
+				elif key == 'OR':
+					can_merge = True
 
-	for node in node_list:
-		if node['type'] == 'node' and isinstance(node.get('val'), list):
-			key = node.get('key')
+				if can_merge and key in keys_to_merge_indices:
+					target_node_index = keys_to_merge_indices[key]
+					# Move preceding comments inside the merged block
+					preceding = node.get('_cm_preceding', [])
+					if preceding:
+						# Remove them from the end of merged_list (they were added as separate comment nodes)
+						for _ in range(len(preceding)):
+							if merged_list and merged_list[-1]['type'] == 'comment':
+								merged_list.pop()
+						# Add them as comment nodes to the beginning of the new content
+						for c_text in preceding:
+							merged_list[target_node_index]['val'].append({'type': 'comment', 'val': c_text})
 
-			can_merge = False
-			if key == 'OR' and parent_key in ('OR', 'NOR'):
-				can_merge = True
-			elif key == 'AND' and parent_key in ('AND', 'NAND', None): # Root scope is implicitly AND
-				can_merge = True
-
-			if can_merge and key in keys_to_merge_indices:
-				target_node_index = keys_to_merge_indices[key]
-				merged_list[target_node_index]['val'].extend(node['val'])
-				changed_any = True
+					merged_list[target_node_index]['val'].extend(node['val'])
+					changed_any = True
+				else:
+					# Reset for this key, as it's not in a mergeable context or is the first of its kind
+					keys_to_merge_indices[key] = len(merged_list)
+					merged_list.append(node)
 			else:
-				# Reset for this key, as it's not in a mergeable context or is the first of its kind
-				keys_to_merge_indices[key] = len(merged_list)
 				merged_list.append(node)
-		else:
-			merged_list.append(node)
 
-	if changed_any:
-		node_list = merged_list
+		if changed_any:
+			node_list = merged_list
 
 	# --- Flatten nested OR/AND/NOR/NAND blocks ---
 	for node in node_list:
@@ -891,7 +917,7 @@ def optimize_node_list(node_list, parent_key=None):
 				child_changed = False
 				continue
 			else:
-				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key)
+				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1)
 			if child_changed:
 				node['val'] = optimized_children; changed_any = True
 
@@ -1685,7 +1711,8 @@ def should_be_compact(node):
 		val = child.get('val', '')
 		# Check 2: If child is a block, return False (enforce multiline for nested blocks)
 		if isinstance(val, list):
-			if ckey in not_compact_nodes: return False
+			if ckey in not_compact_nodes:
+				return False
 			if not should_be_compact(child): return False
 			k_len = len(ckey)
 			v_len = len(str(val))
@@ -1748,7 +1775,8 @@ def node_to_string(node, depth=0, be_compact=False):
 			not be_compact and
 			depth and
 			(depth > 1 or key.endswith(compact_nodes)) and
-			not key.endswith(not_compact_nodes)
+			not key in not_compact_nodes and
+			not key.endswith("_effect")
 		):
 			is_compactable = should_be_compact(node)
 
@@ -1839,7 +1867,7 @@ def node_to_string(node, depth=0, be_compact=False):
 		lines.append(f"{indent}}}{cm_close}")
 		formatted_str = "\n".join(lines)
 
-		if node.get('_raw') and node.get('key') == 'switch':
+		if node.get('_raw') and node.get('key') in HYBRID_RAW_BLOCKS:
 			raw_val = node['_raw']
 			# Simple line count check
 			if raw_val.count('\n') < formatted_str.count('\n'):
@@ -1914,8 +1942,8 @@ def block_to_string(block_list):
 # --- 9. Main ---
 def process_text(content):
 	try:
-		original_content = content
 		content = content.replace('\r\n', '\n')
+		original_content = content
 		tokens = tokenize(content)
 		tree = parse(tokens, content)
 
