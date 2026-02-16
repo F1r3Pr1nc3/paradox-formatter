@@ -1475,20 +1475,56 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 				child_nodes = [c for c in children if c['type'] == 'node']
 				if len(child_nodes) == 2:
 					if all(isinstance(c.get('val'), list) and is_decimal_re.match(c.get('key', '')) for c in child_nodes):
-						has_modifier = False
+						# Identify empty and non-empty children
+						empty_child = None
+						non_empty_child = None
 						for c in child_nodes:
-							if any(gc.get('key') == 'modifier' for gc in c['val'] if gc['type'] == 'node'):
-								has_modifier = True
-								break
-						if not has_modifier:
-							empty_child = None
-							non_empty_child = None
-							for c in child_nodes:
-								if not any(gc['type'] == 'node' for gc in c['val']):
-									empty_child = c
-								else:
-									non_empty_child = c
-							if empty_child and non_empty_child:
+							if not any(gc['type'] == 'node' for gc in c['val']):
+								empty_child = c
+							else:
+								non_empty_child = c
+
+						if empty_child and non_empty_child:
+							# Check for modifiers in non-empty child
+							non_empty_subnodes = [gc for gc in non_empty_child['val'] if gc['type'] == 'node']
+							modifiers = [gc for gc in non_empty_subnodes if gc.get('key') == 'modifier']
+							complex_modifiers = [gc for gc in non_empty_subnodes if gc.get('key') == 'complex_trigger_modifier']
+
+							should_optimize = False
+							strategy = 'basic' # or 'if_wrap'
+							modifier_to_wrap = None
+							comments_to_move_ids = set()
+							moved_comments_text = []
+
+							if not complex_modifiers:
+								if len(modifiers) == 0:
+									should_optimize = True
+								elif len(modifiers) == 1:
+									# Check for factor = 0
+									mod = modifiers[0]
+									# Find 'factor' node
+									factor_node = next((gc for gc in mod.get('val', []) if gc['type'] == 'node' and gc.get('key') == 'factor'), None)
+									if factor_node and str(factor_node.get('val', '')).strip() == '0':
+										should_optimize = True
+										strategy = 'if_wrap'
+										modifier_to_wrap = mod
+										
+										# Identify comments preceding the modifier
+										temp_comments = []
+										for gc in non_empty_child.get('val', []):
+											if gc['type'] == 'comment':
+												temp_comments.append(gc)
+											elif gc['type'] == 'node':
+												if id(gc) == id(modifier_to_wrap):
+													# Found modifier, these are the comments to move
+													for tc in temp_comments:
+														comments_to_move_ids.add(id(tc))
+														# Extract text val (usually includes #)
+														moved_comments_text.append(tc['val'])
+												# Reset after any node
+												temp_comments = []
+
+							if should_optimize:
 								try:
 									weight_empty = float(empty_child['key'])
 									weight_non_empty = float(non_empty_child['key'])
@@ -1496,32 +1532,93 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 									if total_weight > 0:
 										chance = round(weight_non_empty / total_weight * 100, 1)
 										chance_str = f"{chance:g}"
-										node['key'] = 'random'
-										node['op'] = '='
+										
+										# Prepare new content for 'random' block
+										new_random_content = []
+										# Add chance first
 										chance_node = {'key': 'chance', 'op': '=', 'val': chance_str, 'type': 'node'}
-										new_val = [chance_node]
+										
+										# Copy inline comment from non-empty child
+										used_open_as_inline = False
+										if non_empty_child.get('_cm_inline'):
+											chance_node['_cm_inline'] = non_empty_child['_cm_inline']
+										elif non_empty_child.get('_cm_open'):
+											# Use _cm_open as inline comment for chance
+											chance_node['_cm_inline'] = non_empty_child['_cm_open']
+											used_open_as_inline = True
+
+										new_random_content.append(chance_node)
+										
+										# Iterate original children to preserve comments/structure
 										for c in children:
 											if c['type'] == 'comment':
-												new_val.append(c)
+												new_random_content.append(c)
 											elif c['type'] == 'node':
 												if id(c) == id(non_empty_child):
 													if c.get('_cm_open'):
-														new_val.append({'type': 'comment', 'val': c['_cm_open'].strip()})
-													new_val.extend(c['val'])
+														if not used_open_as_inline:
+															new_random_content.append({'type': 'comment', 'val': c['_cm_open'].strip()})
+													
+													# Add content (skipping modifier if wrapping)
+													if strategy == 'basic':
+														new_random_content.extend(c['val'])
+													elif strategy == 'if_wrap':
+														for gc in c['val']:
+															if gc['type'] == 'node' and id(gc) == id(modifier_to_wrap):
+																continue
+															if gc['type'] == 'comment' and id(gc) in comments_to_move_ids:
+																continue
+															new_random_content.append(gc)
+													
 													if c.get('_cm_close'):
-														new_val.append({'type': 'comment', 'val': c['_cm_close'].strip()})
+														new_random_content.append({'type': 'comment', 'val': c['_cm_close'].strip()})
+												
 												elif id(c) == id(empty_child):
+													# Preserve comments from empty child
 													if c.get('_cm_open'):
-														new_val.append({'type': 'comment', 'val': c['_cm_open'].strip()})
+														new_random_content.append({'type': 'comment', 'val': c['_cm_open'].strip()})
 													if isinstance(c.get('val'), list):
 														for inner in c['val']:
 															if inner['type'] == 'comment':
-																new_val.append(inner)
+																new_random_content.append(inner)
 													if c.get('_cm_close'):
-														new_val.append({'type': 'comment', 'val': c['_cm_close'].strip()})
-										node['val'] = new_val
-										changed_any = True
-										print(f"Optimized random_list to random with chance {chance_str}", file=sys.stderr)
+														new_random_content.append({'type': 'comment', 'val': c['_cm_close'].strip()})
+
+										if strategy == 'basic':
+											node['key'] = 'random'
+											node['op'] = '='
+											node['val'] = new_random_content
+											changed_any = True
+											print(f"Optimized random_list to random with chance {chance_str}", file=sys.stderr)
+										
+										elif strategy == 'if_wrap':
+											# Create IF structure
+											# limit = { NOT = { modifier_triggers } }
+											mod_triggers = []
+											for mc in modifier_to_wrap.get('val', []):
+												if mc['type'] == 'node' and mc.get('key') == 'factor':
+													continue
+												mod_triggers.append(mc)
+											
+											not_block = {'key': 'NOT', 'op': '=', 'val': mod_triggers, 'type': 'node'}
+											limit_block = {'key': 'limit', 'op': '=', 'val': [not_block], 'type': 'node'}
+											
+											random_block = {'key': 'random', 'op': '=', 'val': new_random_content, 'type': 'node'}
+											
+											node['key'] = 'if'
+											node['op'] = '='
+											node['val'] = [limit_block, random_block]
+											
+											# Handle moved comments by appending them to new_list BEFORE the node
+											if moved_comments_text:
+												# Join with newlines
+												comments_str = "\n".join(moved_comments_text)
+												comment_node = {'type': 'comment', 'val': comments_str}
+												new_list.append(comment_node)
+
+											changed_any = True
+											print(f"Optimized random_list to if-random with chance {chance_str}", file=sys.stderr)
+
 								except (ValueError, ZeroDivisionError):
 									pass
 
