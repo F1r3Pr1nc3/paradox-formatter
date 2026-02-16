@@ -292,7 +292,7 @@ def parse(tokens, text):
 
 				if t['type'] == 'op':
 					# Type 1: Key followed by operator (e.g., key = val)
-					if t['val'] not in ['{', '}']:
+					if t['val'] and t['val'] not in ['{', '}']:
 						is_key_op = True
 						operator_found = t['val']
 						next_idx = temp_idx
@@ -1470,6 +1470,60 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 						if '_cm_close' in child: node['_cm_close'] = child['_cm_close']
 						changed_any = True
 
+			elif key == 'random_list':
+				children = node.get('val', [])
+				child_nodes = [c for c in children if c['type'] == 'node']
+				if len(child_nodes) == 2:
+					if all(isinstance(c.get('val'), list) and is_decimal_re.match(c.get('key', '')) for c in child_nodes):
+						has_modifier = False
+						for c in child_nodes:
+							if any(gc.get('key') == 'modifier' for gc in c['val'] if gc['type'] == 'node'):
+								has_modifier = True
+								break
+						if not has_modifier:
+							empty_child = None
+							non_empty_child = None
+							for c in child_nodes:
+								if not any(gc['type'] == 'node' for gc in c['val']):
+									empty_child = c
+								else:
+									non_empty_child = c
+							if empty_child and non_empty_child:
+								try:
+									weight_empty = float(empty_child['key'])
+									weight_non_empty = float(non_empty_child['key'])
+									total_weight = weight_empty + weight_non_empty
+									if total_weight > 0:
+										chance = round(weight_non_empty / total_weight * 100, 1)
+										chance_str = f"{chance:g}"
+										node['key'] = 'random'
+										node['op'] = '='
+										chance_node = {'key': 'chance', 'op': '=', 'val': chance_str, 'type': 'node'}
+										new_val = [chance_node]
+										for c in children:
+											if c['type'] == 'comment':
+												new_val.append(c)
+											elif c['type'] == 'node':
+												if id(c) == id(non_empty_child):
+													if c.get('_cm_open'):
+														new_val.append({'type': 'comment', 'val': c['_cm_open'].strip()})
+													new_val.extend(c['val'])
+													if c.get('_cm_close'):
+														new_val.append({'type': 'comment', 'val': c['_cm_close'].strip()})
+												elif id(c) == id(empty_child):
+													if c.get('_cm_open'):
+														new_val.append({'type': 'comment', 'val': c['_cm_open'].strip()})
+													if isinstance(c.get('val'), list):
+														for inner in c['val']:
+															if inner['type'] == 'comment':
+																new_val.append(inner)
+													if c.get('_cm_close'):
+														new_val.append({'type': 'comment', 'val': c['_cm_close'].strip()})
+										node['val'] = new_val
+										changed_any = True
+										print(f"Optimized random_list to random with chance {chance_str}", file=sys.stderr)
+								except (ValueError, ZeroDivisionError):
+									pass
 
 			elif key == 'OR':
 				# New optimization: (A AND B) OR (NOT B) => (NOT B) OR A
@@ -1649,10 +1703,10 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 # --- 8. Output Builder ---
 # Define keys that should always be forced compact if they have no operator or are simple lists
 # force_compact_keys = {"atmosphere_color", "value"} # for 'key_val' , "hsv", "rgb", "rgb255"
-force_compact_keys = {"hsv", "rgb", "rgb255"} # for 'key_val'
+force_compact_keys = {"hsv", "rgb", "rgb255"} # for 'key_val' , "color"
 compact_nodes = (
 	"_event", "switch", "tags", "NOT", "_technology", "_offset", "_flag", "flags", "_opinion_modifier", "_variable", "give_tech_no_error_effect", "colors",
-	"_opinion_modifier", "add_ship_type_from_debris"
+	"_opinion_modifier", "add_ship_type_from_debris", "position", "color"
 ) # Never LB if possible
 not_compact_nodes = (
 	"cost", "upkeep", "produces", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect",

@@ -180,9 +180,12 @@ class ParadoxDocumentFormatter {
             while (tempL < range.start.line) {
                 const line = document.lineAt(tempL);
                 if (!line.isEmptyOrWhitespace) {
-                    const txt = line.text.split('#')[0]; // Ignore comments for indent calc
-                    const open = (txt.match(/\{/g) || []).length;
-                    const close = (txt.match(/\}/g) || []).length;
+                    // Remove strings and comments to avoid counting braces inside them
+                    // Regex matches: ("string") OR (# comment)
+                    const cleanLine = line.text.replace(/("(?:\\.|[^"\\])*")|(#.*)/g, '');
+
+                    const open = (cleanLine.match(/\{/g) || []).length;
+                    const close = (cleanLine.match(/\}/g) || []).length;
                     level += open - close;
                 }
                 tempL++;
