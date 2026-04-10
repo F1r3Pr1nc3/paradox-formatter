@@ -10,10 +10,10 @@ This project is a VS Code extension (`f1r3pr1nc3.paradox-formatter`) that provid
 - `test/`: Contains test event files for verification.
 
 ## Coding Standards
+- **Indentation**: Strictly use tabs (literal `	`) for indentation in all code files (Python, JavaScript, TypeScript).
 - **Python**:
-    - Use 4-space tabs (literal `	` characters) for indentation.
     - Follow established patterns in `logic_optimizer.py` for regex and node manipulation.
-- **TypeScript/JavaScript**: Standard VS Code extension development practices.
+- **TypeScript/JavaScript**: Standard VS Code extension development practices (using tabs).
 - **Paradox Script**: The formatter itself enforces specific styles, such as lowercasing certain keywords (ROOT, PREV, etc.) and upperpasing logical operators (OR, AND, NAND, NOR).
 
 ## Domain Specific Knowledge (Clausewitz Scripting)

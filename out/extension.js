@@ -7,8 +7,8 @@ const path = require('path');
 
 // Helper: Generate tab/space string
 function getIndent(level, options) {
-    const tab = options.insertSpaces ? ' '.repeat(options.tabSize) : '\t';
-    return tab.repeat(Math.max(0, level));
+	const tab = options.insertSpaces ? ' '.repeat(options.tabSize) : '\t';
+	return tab.repeat(Math.max(0, level));
 }
 
 /**
@@ -18,253 +18,279 @@ function getIndent(level, options) {
  * @returns {Promise<{content: string, changed: boolean}>}
  */
 function formatWithPythonBridge(text, forceCompact) {
-    return new Promise((resolve, reject) => {
-        // NOTE: Adjust pythonPath if necessary (e.g., 'python3' or a path to a virtual environment)
-        const pythonPath = 'py';
+	return new Promise((resolve, reject) => {
+		// NOTE: Adjust pythonPath if necessary (e.g., 'python3' or a path to a virtual environment)
+		const pythonPath = 'py';
 
-        // Correct path relative to the extension's root directory
-        const scriptPath = path.join(__dirname, '..', 'bin', 'logic_optimizer.py');
+		// Correct path relative to the extension's root directory
+		const scriptPath = path.join(__dirname, '..', 'bin', 'logic_optimizer.py');
 
-        const config = vscode.workspace.getConfiguration('paradox-formatter');
-        const args = [scriptPath];
+		const config = vscode.workspace.getConfiguration('paradox-formatter');
+		const args = [scriptPath];
 
-        let noCompact = false;
-        if (typeof forceCompact === 'boolean') {
-            noCompact = !forceCompact;
-        } else {
-            noCompact = config.get('noCompact');
-        }
+		let noCompact = false;
+		if (typeof forceCompact === 'boolean') {
+			noCompact = !forceCompact;
+		} else {
+			noCompact = config.get('noCompact');
+		}
 
-        if (noCompact) {
-            args.push('--no-compact');
-        }
+		if (noCompact) {
+			args.push('--no-compact');
+		}
 
-        // 1. Spawn Python process
-        const pythonProcess = spawn(pythonPath, args);
+		// 1. Spawn Python process
+		const pythonProcess = spawn(pythonPath, args);
 
-        let stdout = '';
-        let stderr = '';
+		let stdout = '';
+		let stderr = '';
 
-        // 2. Capture stdout (formatted result)
-        pythonProcess.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
+		// 2. Capture stdout (formatted result)
+		pythonProcess.stdout.on('data', (data) => {
+			stdout += data.toString();
+		});
 
-        // 3. Capture stderr (errors from Python)
-        pythonProcess.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
+		// 3. Capture stderr (errors from Python)
+		pythonProcess.stderr.on('data', (data) => {
+			stderr += data.toString();
+		});
 
-        // 4. Handle process close
-        pythonProcess.on('close', (code) => {
-            if (code !== 0) {
-                console.error(`Python script exited with code ${code}. Stderr: ${stderr}`);
-                // Reject promise but still resolve with original content to avoid blocking VSCode
-                vscode.window.showErrorMessage(`Stellaris Formatter failed: ${stderr}`);
-                return resolve({ content: text, changed: false });
-            }
+		// 4. Handle process close
+		pythonProcess.on('close', (code) => {
+			if (code !== 0) {
+				console.error(`Python script exited with code ${code}. Stderr: ${stderr}`);
+				// Reject promise but still resolve with original content to avoid blocking VSCode
+				vscode.window.showErrorMessage(`Stellaris Formatter failed: ${stderr}`);
+				return resolve({ content: text, changed: false });
+			}
 
-            try {
-                // The Python script outputs a JSON object {"content": "...", "changed": true}
-                const result = JSON.parse(stdout);
-                resolve(result);
-            } catch (e) {
-                console.error("Failed to parse JSON output from Python:", e, "Raw output:", stdout);
-                vscode.window.showErrorMessage("Stellaris Formatter: Corrupted output from Python script.");
-                resolve({ content: text, changed: false });
-            }
-        });
+			try {
+				// The Python script outputs a JSON object {"content": "...", "changed": true}
+				const result = JSON.parse(stdout);
+				resolve(result);
+			} catch (e) {
+				console.error("Failed to parse JSON output from Python:", e, "Raw output:", stdout);
+				vscode.window.showErrorMessage("Stellaris Formatter: Corrupted output from Python script.");
+				resolve({ content: text, changed: false });
+			}
+		});
 
-        // 5. Send input (document text) to Python's stdin
-        pythonProcess.stdin.write(text);
-        pythonProcess.stdin.end();
-    });
+		// 5. Send input (document text) to Python's stdin
+		pythonProcess.stdin.write(text);
+		pythonProcess.stdin.end();
+	});
 }
 
 class ParadoxDocumentFormatter {
 
-    // 1. Tokenizer: Protects strings and comments to prevent formatting them
-    protectContent(text, placeholderMap) {
-        let counter = 0;
-        // Protect Strings and Comments in one pass to avoid nesting
-        // Group 1: Strings "..." (using non-capturing group for content)
-        // Group 2: Comments #...
-        text = text.replace(/("(?:\\.|[^"\\])*")|(#.*)/g, (match, strMatch, comMatch) => {
-            if (strMatch) {
-                const key = `__STR_${counter++}__`;
-                placeholderMap.set(key, match);
-                return key;
-            }
-            if (comMatch) {
-                const key = `__COM_${counter++}__`;
-                placeholderMap.set(key, match);
-                return key;
-            }
-            return match;
-        });
-        return text;
-    }
+	// 1. Tokenizer: Protects strings and comments to prevent formatting them
+	protectContent(text, placeholderMap) {
+		let counter = 0;
+		// Protect Strings and Comments in one pass to avoid nesting
+		// Group 1: Strings "..." (using non-capturing group for content)
+		// Group 2: Comments #...
+		text = text.replace(/("(?:\\.|[^"\\])*")|(#.*)/g, (match, strMatch, comMatch) => {
+			if (strMatch) {
+				const key = `__STR_${counter++}__`;
+				placeholderMap.set(key, match);
+				return key;
+			}
+			if (comMatch) {
+				const key = `__COM_${counter++}__`;
+				placeholderMap.set(key, match);
+				return key;
+			}
+			return match;
+		});
+		return text;
+	}
 
-    // 2. Restorer: Puts original strings and comments back
-    restoreContent(text, placeholderMap) {
-        // We loop until no placeholders remain (handling potential nesting edge cases)
-        // But simple replace is usually enough for this structure
-        return text.replace(/__(STR|COM)_\d+__/g, (match) => {
-            return placeholderMap.get(match) || match;
-        });
-    }
+	// 2. Restorer: Puts original strings and comments back
+	restoreContent(text, placeholderMap) {
+		// We loop until no placeholders remain (handling potential nesting edge cases)
+		// But simple replace is usually enough for this structure
+		return text.replace(/__(STR|COM)_\d+__/g, (match) => {
+			return placeholderMap.get(match) || match;
+		});
+	}
 
-    // 3. Expander: Inserts newlines for structure
-    expandOneLineBlock(text) {
-        // Ensure space around =
-        text = text.replace(/(?<![<>\!])\s*=\s*/g, ' = ');
+	// 3. Expander: Inserts newlines for structure
+	expandOneLineBlock(text) {
+		// Ensure space around =
+		text = text.replace(/(?<![<>\!])\s*=\s*/g, (match) => {
+			if (match === ' = ') return match;
+			if (match.includes('\t')) {
+				if (match.startsWith('\t')) {
+					const parts = match.split('=');
+					return parts[0].replace(/ /g, '') + '= ';
+				}
+				if (match.endsWith('\t')) {
+					const parts = match.split('=');
+					return parts[1].replace(/ /g, '') + '= ';
+				}
+			}
+			return ' = ';
+		});
 
-        // Add newlines around { and }
-        // Case: "name = {"  ->  "name = {\n"
-        // Modified to keep inline comments on the same line: "name = { # comment" -> "name = { # comment"
-        text = text.replace(/\s*\{(\s*)(__COM_\d+__)?/g, (match, spaces, comment) => {
-            if (comment && !spaces.includes('\n')) {
-                return ' { ' + comment;
-            }
-            if (comment) {
-                return ' {\n' + comment;
-            }
-            return ' {\n';
-        });
-        // Case: "}"  ->  "\n}"
-        text = text.replace(/\s*\}\s*/g, '\n}\n');
+		// Add newlines around { and }
+		// Case: "name = {"  ->  "name = {\n"
+		// Modified to keep inline comments on the same line: "name = { # comment" -> "name = { # comment"
+		text = text.replace(/\s*\{(\s*)(__COM_\d+__)?/g, (match, spaces, comment) => {
+			if (comment && !spaces.includes('\n')) {
+				return ' { ' + comment;
+			}
+			if (comment) {
+				return ' {\n' + comment;
+			}
+			return ' {\n';
+		});
+		// Case: "}"  ->  "\n}"
+		text = text.replace(/\s*\}\s*/g, '\n}\n');
 
-        // Add newlines between multiple properties on the same line
-        // Look for pattern:  Value (space) NextKey =
-        // We assume a "Key" is an alphanumeric identifier followed by "="
-        // The $1 matches the previous value's last char, $2 matches the new key
-        text = text.replace(/(\S)\s+([a-zA-Z0-9_\.@:]+\s*=)/g, '$1\n$2');
+		// Add newlines between multiple properties on the same line
+		// Look for pattern:  Value (space) NextKey =
+		// We assume a "Key" is an alphanumeric identifier followed by "="
+		// The $1 matches the previous value's last char, $2 matches the new key
+		text = text.replace(/(\S)\s+([a-zA-Z0-9_\.@:]+\s*=)/g, '$1\n$2');
 
-        return text;
-    }
+		return text;
+	}
 
-    // This is the JS formatter for range (selection) formatting
-    formatRange(document, range, options) {
-        // Expand range to cover full lines to ensure correct indentation context
-        const start = new vscode.Position(range.start.line, 0);
-        const endLine = document.lineAt(range.end.line);
-        const end = new vscode.Position(range.end.line, endLine.text.length);
-        const extendedRange = new vscode.Range(start, end);
+	// This is the JS formatter for range (selection) formatting
+	formatRange(document, range, options) {
+		// Expand range to cover full lines to ensure correct indentation context
+		const start = new vscode.Position(range.start.line, 0);
+		const endLine = document.lineAt(range.end.line);
+		const end = new vscode.Position(range.end.line, endLine.text.length);
+		const extendedRange = new vscode.Range(start, end);
 
-        const config = vscode.workspace.getConfiguration('paradox-formatter');
-        const noCompact = config.get('noCompact');
+		const config = vscode.workspace.getConfiguration('paradox-formatter');
+		const noCompact = config.get('noCompact');
 
-        const fullText = document.getText(extendedRange);
-        const placeholderMap = new Map();
+		const fullText = document.getText(extendedRange);
+		const placeholderMap = new Map();
 
-        // A. Protect strings/comments so regex doesn't mangle them
-        let safeText = this.protectContent(fullText, placeholderMap);
+		// A. Protect strings/comments so regex doesn't mangle them
+		let safeText = this.protectContent(fullText, placeholderMap);
 
-        // B. Expand structure (Insert newlines)
-        let expandedText = safeText;
-        if (noCompact) {
-            expandedText = this.expandOneLineBlock(safeText);
-        } else {
-            // Minimal formatting for compact mode: just normalize spacing around =
-            expandedText = expandedText.replace(/(?<![<>\!])\s*=\s*/g, ' = ');
-        }
+		// B. Expand structure (Insert newlines)
+		let expandedText = safeText;
+		if (noCompact) {
+			expandedText = this.expandOneLineBlock(safeText);
+		} else {
+			// Minimal formatting for compact mode: just normalize spacing around =
+			expandedText = expandedText.replace(/(?<![<>\!])\s*=\s*/g, (match) => {
+				if (match === ' = ') return match;
+				if (match.includes('\t')) {
+					if (match.startsWith('\t')) {
+						const parts = match.split('=');
+						return parts[0].replace(/ /g, '') + '= ';
+					}
+					if (match.endsWith('\t')) {
+						const parts = match.split('=');
+						return parts[1].replace(/ /g, '') + '= ';
+					}
+				}
+				return ' = ';
+			});
+		}
 
-        // C. Split into lines for indentation
-        let lines = expandedText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+		// C. Split into lines for indentation
+		let lines = expandedText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-        // D. Calculate Starting Indentation (Context Awareness)
-        // We look at the lines BEFORE the selection to know the current indentation level
-        let level = 0;
-        if (range.start.line > 0) {
-            let tempL = 0;
-            while (tempL < range.start.line) {
-                const line = document.lineAt(tempL);
-                if (!line.isEmptyOrWhitespace) {
-                    // Remove strings and comments to avoid counting braces inside them
-                    // Regex matches: ("string") OR (# comment)
-                    const cleanLine = line.text.replace(/("(?:\\.|[^"\\])*")|(#.*)/g, '');
+		// D. Calculate Starting Indentation (Context Awareness)
+		// We look at the lines BEFORE the selection to know the current indentation level
+		let level = 0;
+		if (range.start.line > 0) {
+			let tempL = 0;
+			while (tempL < range.start.line) {
+				const line = document.lineAt(tempL);
+				if (!line.isEmptyOrWhitespace) {
+					// Remove strings and comments to avoid counting braces inside them
+					// Regex matches: ("string") OR (# comment)
+					const cleanLine = line.text.replace(/("(?:\\.|[^"\\])*")|(#.*)/g, '');
 
-                    const open = (cleanLine.match(/\{/g) || []).length;
-                    const close = (cleanLine.match(/\}/g) || []).length;
-                    level += open - close;
-                }
-                tempL++;
-            }
-            level = Math.max(0, level);
-        }
+					const open = (cleanLine.match(/\{/g) || []).length;
+					const close = (cleanLine.match(/\}/g) || []).length;
+					level += open - close;
+				}
+				tempL++;
+			}
+			level = Math.max(0, level);
+		}
 
-        // E. Build the final formatted result
-        const resultLines = [];
+		// E. Build the final formatted result
+		const resultLines = [];
 
-        for (let i = 0; i < lines.length; i++) {
-            let line = lines[i];
+		for (let i = 0; i < lines.length; i++) {
+			let line = lines[i];
 
-            // Logic: If line starts with }, decrement indent immediately
-            if (line.startsWith('}')) {
-                level--;
-            }
+			// Logic: If line starts with }, decrement indent immediately
+			if (line.startsWith('}')) {
+				level--;
+			}
 
-            // Add indentation
-            const indentString = getIndent(level, options);
-            // Restore content (put strings/comments back)
-            const restoredLine = this.restoreContent(line, placeholderMap);
+			// Add indentation
+			const indentString = getIndent(level, options);
+			// Restore content (put strings/comments back)
+			const restoredLine = this.restoreContent(line, placeholderMap);
 
-            resultLines.push(indentString + restoredLine);
+			resultLines.push(indentString + restoredLine);
 
-            // Logic: Calculate indent for NEXT line
-            const open = (line.match(/\{/g) || []).length;
-            const close = (line.match(/\}/g) || []).length;
+			// Logic: Calculate indent for NEXT line
+			const open = (line.match(/\{/g) || []).length;
+			const close = (line.match(/\}/g) || []).length;
 
-            if (line.startsWith('}')) {
-                level += open - (close - 1);
-            } else {
-                level += open - close;
-            }
-        }
+			if (line.startsWith('}')) {
+				level += open - (close - 1);
+			} else {
+				level += open - close;
+			}
+		}
 
-        return [vscode.TextEdit.replace(extendedRange, resultLines.join('\n'))];
-    }
+		return [vscode.TextEdit.replace(extendedRange, resultLines.join('\n'))];
+	}
 
-    // This now uses the Python bridge for whole-document formatting
-    async provideDocumentFormattingEdits(document, options) {
-        const text = document.getText();
-        const { content, changed } = await formatWithPythonBridge(text);
+	// This now uses the Python bridge for whole-document formatting
+	async provideDocumentFormattingEdits(document, options) {
+		const text = document.getText();
+		const { content, changed } = await formatWithPythonBridge(text);
 
-        if (changed) {
-            const fullRange = new vscode.Range(
-                document.positionAt(0),
-                document.positionAt(text.length)
-            );
-            return [vscode.TextEdit.replace(fullRange, content)];
-        }
+		if (changed) {
+			const fullRange = new vscode.Range(
+				document.positionAt(0),
+				document.positionAt(text.length)
+			);
+			return [vscode.TextEdit.replace(fullRange, content)];
+		}
 
-        return [];
-    }
+		return [];
+	}
 
-    // This uses the old JS formatter for selection formatting
-    async provideDocumentRangeFormattingEdits(document, range, options) {
-        return this.formatRange(document, range, options);
-    }
+	// This uses the old JS formatter for selection formatting
+	async provideDocumentRangeFormattingEdits(document, range, options) {
+		return this.formatRange(document, range, options);
+	}
 }
 
 function activate(ctx) {
-    const selector = [
-        { scheme: 'file', language: 'paradox' },
-        { scheme: 'file', language: 'stellaris' },
-        { scheme: 'file', language: 'hoi4' },
-        { scheme: 'file', language: 'ck2' },
-        { scheme: 'file', language: 'eu4' },
-        { scheme: 'file', language: 'imperator' },
-        { scheme: 'file', language: 'vic2' },
-        { scheme: 'file', language: 'ck3' },
-        { scheme: 'file', language: 'vic3' },
-        { scheme: 'file', language: 'eu5' }
-    ];
+	const selector = [
+		{ scheme: 'file', language: 'paradox' },
+		{ scheme: 'file', language: 'stellaris' },
+		{ scheme: 'file', language: 'hoi4' },
+		{ scheme: 'file', language: 'ck2' },
+		{ scheme: 'file', language: 'eu4' },
+		{ scheme: 'file', language: 'imperator' },
+		{ scheme: 'file', language: 'vic2' },
+		{ scheme: 'file', language: 'ck3' },
+		{ scheme: 'file', language: 'vic3' },
+		{ scheme: 'file', language: 'eu5' }
+	];
 
-    const formatter = new ParadoxDocumentFormatter();
+	const formatter = new ParadoxDocumentFormatter();
 
-    ctx.subscriptions.push(
-        vscode.languages.registerDocumentFormattingEditProvider(selector, formatter),
-        vscode.languages.registerDocumentRangeFormattingEditProvider(selector, formatter)
-    );
+	ctx.subscriptions.push(
+		vscode.languages.registerDocumentFormattingEditProvider(selector, formatter),
+		vscode.languages.registerDocumentRangeFormattingEditProvider(selector, formatter)
+	);
 }
