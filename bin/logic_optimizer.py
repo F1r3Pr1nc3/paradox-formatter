@@ -101,34 +101,55 @@ def _negate_numerical_comparison_recursively(node, dry_run=False):
 	key = node.get('key', '')
 	op = node.get('op')
 	val = node.get('val')
+	# Min,Max value pairs
+	SPECIAL_NEGATION_VALUES = {'has_starbase_size': ['starbase_outpost', 'starbase_citadel']}
 
 	# Case 1: The node itself is a direct numerical comparison.
 	if not isinstance(val, list):
+		val = str(val)
 		if op == '=':
+			if val == 'yes': return False
+			# Boolean negation (no -> yes)
+			if val == 'no':
+				if not dry_run:
+					node['val'] = 'yes'
+				return True
 			# Applies only to `num_*` and `has_*` triggers.
-			if key.startswith(('has_', 'num_')) and is_decimal_re.match(str(val)):
-				if not dry_run:
-					# print(f"Found Comparison Node:\n{key} {val} {node}") # DEBUG
-					if val == '0': node['op'] = '>'
-					else: node['op'] = '!='
-				return True
+			if key.startswith(('has_', 'num_')):
+				if is_decimal_re.match(val):
+					if not dry_run:
+						if val == '0':
+							node['op'] = '>' # as they are always positive to be expect
+						else: node['op'] = '!='
+					return True
+				if val.startswith(('@','value:')):
+					if not dry_run:
+						node['op'] = '!='
+					return True
+				# Special String Comparing Negation
+				if key in SPECIAL_NEGATION_VALUES and val in SPECIAL_NEGATION_VALUES[key]:
+					if not dry_run:
+						if val == SPECIAL_NEGATION_VALUES[key][0]:
+							node['op'] = '>'
+						else:
+							node['op'] = '<'
+					return True
 		elif op in negated_ops:
-			# For comparisons like <, >, <=, >=, we can always negate them.
-			if op in ('>', '<', '>=', '<='):
-				if not dry_run:
-					node['op'] = negated_ops[op]
-				return True
-			# For !=, we can negate to =
-			if op == '!=':
-				if not dry_run:
-					node['op'] = '='
-				return True
-			# General case for other operators if they are decimal
-			if is_decimal_re.match(str(val)):
-				# print(f"FOUND COMPARISON NODE:\n{key} {val} {node}") # DEBUG
-				if not dry_run:
-					node['op'] = negated_ops[op]
-				return True
+			if key.startswith(('has_', 'num_')):
+				if is_decimal_re.match(val):
+					if not dry_run:
+						if val == '0' and op == '>':
+							node['op'] = '='
+						else:
+							node['op'] = negated_ops[op]
+					return True
+				# Exclude SPECIAL_NEGATION_VALUES triggers
+				if key in SPECIAL_NEGATION_VALUES and val in SPECIAL_NEGATION_VALUES[key]:
+					return False
+			if not dry_run:
+				node['op'] = negated_ops[op]
+			return True
+
 	# Case 2: The node is a block trigger containing a specific key to negate.
 	else:
 		children = [c for c in val if c['type'] == 'node']
@@ -571,7 +592,7 @@ def _is_negation_node(node):
 	key = node.get('key')
 	if key in NEGATION_LOGIC_KEYS and is_block:
 		return True
-	
+
 	op = node.get('op')
 	val = node.get('val')
 	if op == '=' and val == 'no':
@@ -609,12 +630,8 @@ def _get_positive_form(node):
 		return [{'key': 'AND', 'op': '=', 'val': node.get('val', []), 'type': 'node'}]
 
 	new_node = copy.deepcopy(node)
-	# Positive form of key = no is key = yes
-	if node.get('val') == 'no':
-		new_node['val'] = 'yes'
-		return [new_node]
 
-	# Handle numerical comparisons
+	# Handle numerical comparisons and boolean
 	if _negate_numerical_comparison_recursively(new_node, dry_run=False):
 		return [new_node]
 
@@ -668,8 +685,8 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 		n2k = n2.get('key')
 		is_n1_logic = n1k in ('NOT', 'NOR')
 		# User preference: A node is a merge candidate if it's a 'no' boolean OR a numerical comparison
-		is_n1_comp = n1.get('val') == 'no' or _negate_numerical_comparison_recursively(n1, dry_run=True)
-		is_n2_comp = n2.get('val') == 'no' or _negate_numerical_comparison_recursively(n2, dry_run=True)
+		is_n1_comp = _negate_numerical_comparison_recursively(n1, dry_run=True)
+		is_n2_comp = _negate_numerical_comparison_recursively(n2, dry_run=True)
 		is_n2_logic = n2k in ('NOT', 'NOR')
 
 		# Case 1: (NOT/NOR) then (comparison/no)
@@ -687,8 +704,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 
 				if n3 and n3.get('key') in ('NOT', 'NOR'): # 3-node merge
 					negated_comp_node = copy.deepcopy(n2)
-					if negated_comp_node.get('val') == 'no': negated_comp_node['val'] = 'yes'
-					else: _negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
+					_negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
 					if '_cm_inline' in n2: negated_comp_node['_cm_inline'] = n2['_cm_inline']
 					new_nor_children = []
 					if isinstance(n1.get('val'), list): new_nor_children.extend(n1['val'])
@@ -703,8 +719,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 					continue
 				else: # 2-node merge
 					negated_comp_node = copy.deepcopy(n2)
-					if negated_comp_node.get('val') == 'no': negated_comp_node['val'] = 'yes'
-					else: _negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
+					_negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
 					if '_cm_inline' in n2: negated_comp_node['_cm_inline'] = n2['_cm_inline']
 					new_nor_children = []
 					if isinstance(n1.get('val'), list): new_nor_children.extend(n1['val'])
@@ -722,8 +737,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 			# User preference: Allow merging 'no' (becomes 'yes' inside), block 'yes' (becomes double negation 'no' inside)
 			if v1 and (v1 == 'no' or v1 not in ('yes', 'no')):
 				negated_comp_node = copy.deepcopy(n1)
-				if negated_comp_node.get('val') == 'no': negated_comp_node['val'] = 'yes'
-				else: _negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
+				_negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
 				if '_cm_inline' in n1: negated_comp_node['_cm_inline'] = n1['_cm_inline']
 				new_nor_children = [negated_comp_node]
 				for c_idx in range(i + 1, idx2): new_nor_children.append(node_list[c_idx])
@@ -1255,9 +1269,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 								extracted_items = [c for c in item['val'] if c['type'] == 'node']
 								nodes_to_extract.extend(extracted_items)
 							else:
-								# Boolean negation (no -> yes)
-								if child_copy.get('val') == 'no': child_copy['val'] = 'yes'
-								else: _negate_numerical_comparison_recursively(child_copy)
+								_negate_numerical_comparison_recursively(child_copy)
 								nodes_to_extract.append(child_copy)
 						else:
 							remaining_children.append(item)
@@ -1888,8 +1900,8 @@ compact_nodes = (
 	"_opinion_modifier", "add_ship_type_from_debris", "position", "color"
 ) # Never LB if possible
 not_compact_nodes = (
-	"cost", "upkeep", "produces", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect",
-	"settings"
+	"cost", "upkeep", "produces", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect", "trigger",
+	"settings", "weight"
 ) # Always LB
 not_compact_nodes += NON_NEGATABLE_SCOPES
 
@@ -1898,7 +1910,8 @@ normal_nodes = (
 	"limit", 'trigger', "add_resource", "ai_chance", "traits", "civics", "ethos", "modify_species", "change_species_characteristics",
 	"custom_tooltip"
 ) # If > 1 item LB
-extra_space_nodes = ("inline_script") # TODO: this nodes are surounded by extra LF (except they are the last child or surounded by comments or another extra_space_node of same type.
+space_tags_in_event_root = ("archaeology = yes", "diplomatic = yes") # TODO
+extra_space_nodes = ("inline_script", "weight") # TODO: this nodes are surounded by extra LF (except they are the last child or surounded by comments or another extra_space_node of same type.
 
 def should_be_compact(node):
 	if not isinstance(node.get('val'), list): return False
