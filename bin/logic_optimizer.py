@@ -632,7 +632,7 @@ def _get_positive_form(node):
 	new_node = copy.deepcopy(node)
 
 	# Handle numerical comparisons and boolean
-	if _negate_numerical_comparison_recursively(new_node, dry_run=False):
+	if _negate_numerical_comparison_recursively(new_node):
 		return [new_node]
 
 	# Positive form of A = { B = { C = no } } is A = { B = { C = yes } }
@@ -690,7 +690,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 		is_n2_logic = n2k in ('NOT', 'NOR')
 
 		# Case 1: (NOT/NOR) then (comparison/no)
-		if is_n1_logic and is_n2_comp and parent_key not in ('OR', 'NOR') and not _has_text(n1):
+		if is_n1_logic and is_n2_comp and parent_key not in ('OR', 'NOR') and not _has_text(n1) and n2k not in ('limit', 'trigger'):
 			v2 = n2.get('val', '')
 			# User preference: Allow merging 'no' (becomes 'yes' inside), block 'yes' (becomes double negation 'no' inside)
 			if v2 and (v2 == 'no' or v2 not in ('yes', 'no')):
@@ -704,7 +704,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 
 				if n3 and n3.get('key') in ('NOT', 'NOR'): # 3-node merge
 					negated_comp_node = copy.deepcopy(n2)
-					_negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
+					_negate_numerical_comparison_recursively(negated_comp_node)
 					if '_cm_inline' in n2: negated_comp_node['_cm_inline'] = n2['_cm_inline']
 					new_nor_children = []
 					if isinstance(n1.get('val'), list): new_nor_children.extend(n1['val'])
@@ -719,7 +719,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 					continue
 				else: # 2-node merge
 					negated_comp_node = copy.deepcopy(n2)
-					_negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
+					_negate_numerical_comparison_recursively(negated_comp_node)
 					if '_cm_inline' in n2: negated_comp_node['_cm_inline'] = n2['_cm_inline']
 					new_nor_children = []
 					if isinstance(n1.get('val'), list): new_nor_children.extend(n1['val'])
@@ -732,12 +732,12 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 					continue
 
 		# Case 2: (comparison/no) then (NOT/NOR)
-		elif is_n1_comp and is_n2_logic and parent_key not in ('OR', 'NOR') and not _has_text(n2):
+		elif is_n1_comp and is_n2_logic and parent_key not in ('OR', 'NOR') and not _has_text(n2) and n1k not in ('limit', 'trigger'):
 			v1 = n1.get('val', '')
 			# User preference: Allow merging 'no' (becomes 'yes' inside), block 'yes' (becomes double negation 'no' inside)
 			if v1 and (v1 == 'no' or v1 not in ('yes', 'no')):
 				negated_comp_node = copy.deepcopy(n1)
-				_negate_numerical_comparison_recursively(negated_comp_node, dry_run=False)
+				_negate_numerical_comparison_recursively(negated_comp_node)
 				if '_cm_inline' in n1: negated_comp_node['_cm_inline'] = n1['_cm_inline']
 				new_nor_children = [negated_comp_node]
 				for c_idx in range(i + 1, idx2): new_nor_children.append(node_list[c_idx])
