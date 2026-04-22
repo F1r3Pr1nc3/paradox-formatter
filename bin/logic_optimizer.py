@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.4.9"
+__version__ = "0.5.0"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -268,7 +268,7 @@ def parse(tokens, text):
 						preceding_comments_buffer = []
 
 						raw_text = text[start_token['start']:end_token['end']]
-						node = {'type': 'raw_block', 'val': raw_text}
+						node = {'type': 'raw_block', 'val': raw_text, 'key': token_val}
 						current_list.append(node)
 						i = scan_idx + 1
 						continue
@@ -2063,8 +2063,8 @@ def node_to_string(node, depth=0, be_compact=False):
 
 		for i, child in enumerate(children):
 			is_comment = child.get('type') == 'comment'
-			is_block = isinstance(child.get('val'), list)
 			key = child.get('key')
+			is_block = (isinstance(child.get('val'), list) and key not in KEYWORDS_TO_UPPER) or child.get('type') == 'raw_block'
 
 			comment_is_header = False
 			if is_comment:
@@ -2080,16 +2080,26 @@ def node_to_string(node, depth=0, be_compact=False):
 						add_space = True
 				# Find previous non-comment node to get its key for the user's rule
 				prev_node_real = None
-				if add_space and (is_block or is_comment):
+				if add_space:
 					# Don't add space around nodes that should be compact
+					next_node_real = child
 					next_key = key
 					if is_comment:
 						for j in range(i + 1, len(children)):
 							if children[j].get('type') != 'comment':
-								next_key = children[j].get('key')
+								next_node_real = children[j]
+								next_key = next_node_real.get('key')
 								break
+					next_is_block = isinstance(next_node_real.get('val'), list)
+					next_is_fake_block = next_node_real and next_is_block and str(next_key).endswith(compact_nodes)
 
-					if next_key in NON_NEGATABLE_SCOPES or str(next_key).endswith(compact_nodes) or next_key in KEYWORDS_TO_UPPER:
+					if (
+						not next_key
+						or next_key in NON_NEGATABLE_SCOPES
+						or next_key in KEYWORDS_TO_UPPER
+						or next_is_fake_block
+						or (next_key not in ('planet', 'leader') and SCOPES_RE.match(next_key))
+					):
 						add_space = False
 					else:
 						for j in range(i - 1, -1, -1):
@@ -2097,22 +2107,23 @@ def node_to_string(node, depth=0, be_compact=False):
 								prev_node_real = children[j]
 								break
 						prev_key = prev_node_real.get('key') if prev_node_real else None
-						if prev_node_real and isinstance(prev_node_real.get('val'), list):
-							if next_key == prev_key:
-								add_space = False
-						if prev_key and (prev_key in NON_NEGATABLE_SCOPES or prev_key.endswith(compact_nodes) or prev_key in KEYWORDS_TO_UPPER):
+						prev_is_block_real = isinstance(prev_node_real.get('val'), list) if prev_node_real else False
+						if prev_key == next_key:
 							add_space = False
+						elif prev_key and (prev_key in NON_NEGATABLE_SCOPES or prev_key in KEYWORDS_TO_UPPER or (prev_is_block_real and prev_key.endswith(compact_nodes))):
+							add_space = False
+		
 
 				if str(key).startswith('[['):
 					add_space = True
 				elif str(key) == ']':
 					add_space = False
 				else:
-					if prev_node_real and prev_node_real.get('key') in ("exists", "optimize_memory" ):								add_space = False
-							# 	print("NO SPACE for:", prev_node_real)
-							# else:
-							# 	print("SPACE for:", prev_node_real)
-
+					if prev_node_real and prev_node_real.get('key') in ("exists", "optimize_memory" ):
+						add_space = False
+						# 	print("NO SPACE for:", prev_node_real)
+						# else:
+						# 	print("SPACE for:", prev_node_real)
 				if add_space:
 					lines.append("")
 
@@ -2152,6 +2163,7 @@ def block_to_string(block_list):
 	prev_was_header = False
 	prev_was_comment = False
 	prev_is_block = False
+	prev_node = None
 	i = 0
 
 	for node in block_list:
@@ -2175,17 +2187,18 @@ def block_to_string(block_list):
 				is_block = True
 
 		if (
-			# (not is_block or not key in NON_NEGATABLE_SCOPES) and
 			(not is_comment_node and not is_var and
 			(not prev_was_comment or prev_was_header)) or
 			(comment_is_header and not prev_was_comment and i) or
 			(is_comment_node and prev_is_block)
 		):
 			lines.append("")
+
 		i += 1
 		prev_was_header = comment_is_header
 		prev_was_comment = is_comment_node
 		prev_is_block = is_block
+		prev_node = node
 
 		cm_open = node.get('_cm_open')
 		node_to_print = node

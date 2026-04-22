@@ -25,5 +25,6 @@ This project is a VS Code extension (`f1r3pr1nc3.paradox-formatter`) that provid
 - **Logic Optimization**: The formatter can simplify `OR-AND` structures into `NAND` and similar logical transformations to improve readability and potentially performance in-game.
 
 ## Known State & Recent Fixes
+- The `logic_optimizer.py` horizontal merging step was updated to prevent merging structural block keywords (like `limit`, `trigger`) into `NOR` logic gates during numerical/boolean negation routines.
 - The `logic_optimizer.py` was updated to replace regex-based logic with a proper parser to handle `factor=0` modifiers and nested blocks without corrupting the file structure (preventing unbalanced braces).
 - Indentation preference for the workspace is set to 4-space tabs.
