@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -54,7 +54,7 @@ negated_ops = {'>': '<=', '<': '>=', '>=': '<', '<=': '>', '!=': '=', '=': '!='}
 triggerScopes = r"leader|owner|controller|overlord|space_owner|(?:prev){1,4}|(?:from){1,4}|root|this|event_target:[\w@]+|owner_or_space_owner"
 SCOPES = triggerScopes + r"|design|megastructure|planet|ship|pop_group|fleet|cosmic_storm|capital_scope|sector_capital|capital_star|system_star|solar_system|star|orbit|army|ambient_object|species|owner_species|owner_main_species|founder_species|bypass|pop_faction|war|federation|starbase|deposit|sector|archaeological_site|first_contact|spy_network|espionage_operation|espionage_asset|agreement|situation|astral_rift"
 # 'switch' gets handled hybrid; can't contain trigger nodes like 'calc_true_if'
-RAW_BLOCKS = ('in_breach_of', '')
+RAW_BLOCKS = ('in_breach_of', 'discrete_terms', 'resource_terms ', '')
 HYBRID_RAW_BLOCKS = ('switch', 'inverted_switch') # , 'random_list' TODO
 RAW_BLOCKS = RAW_BLOCKS + HYBRID_RAW_BLOCKS
 
@@ -1218,6 +1218,42 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 						changed_any = True
 						print("Created NOR from AND-NO/NOT structure", file=sys.stderr)
 
+			if key in ('AND', 'OR', 'NAND', 'NOR'):
+				children_nodes = [n for n in node['val'] if n['type'] == 'node']
+				if len(children_nodes) > 1:
+					first_key = children_nodes[0].get('key', '')
+					first_op = children_nodes[0].get('op', '=')
+					if first_key and SCOPES_RE.match(first_key):
+						if all(c.get('key') == first_key and c.get('op') == first_op and isinstance(c.get('val'), list) for c in children_nodes):
+							new_logic_children = []
+							for child in node['val']:
+								if child['type'] == 'comment':
+									new_logic_children.append(child)
+								else:
+									cm_open = child.get('_cm_open')
+									if cm_open:
+										new_logic_children.append({'type': 'comment', 'val': cm_open.strip()})
+									new_logic_children.extend(child['val'])
+									cm_close = child.get('_cm_close')
+									if cm_close:
+										new_logic_children.append({'type': 'comment', 'val': cm_close.strip()})
+
+							new_val = [
+								{
+									'key': key,
+									'op': node.get('op', '='),
+									'val': new_logic_children,
+									'type': 'node'
+								}
+							]
+
+							node['key'] = first_key
+							node['op'] = first_op
+							node['val'] = new_val
+							changed_any = True
+							print(f"Extracted common scope {first_key} from {key} block", file=sys.stderr)
+							key = first_key
+
 			if key in ('AND', 'OR', 'this'):
 				children_nodes = [n for n in node['val'] if n['type'] == 'node'] # , 'raw_block'
 				if len(children_nodes) == 1:
@@ -1902,8 +1938,8 @@ compact_nodes = (
 	"_opinion_modifier", "add_ship_type_from_debris", "position", "color"
 ) # Never LB if possible
 not_compact_nodes = (
-	"cost", "upkeep", "produces", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect", "trigger",
-	"settings", "weight"
+	"cost", "upkeep", "produces", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect", "trigger", "default",
+	"settings", "weight", "pop_amount_change_category"
 ) # Always LB
 not_compact_nodes += NON_NEGATABLE_SCOPES
 
@@ -2112,7 +2148,7 @@ def node_to_string(node, depth=0, be_compact=False):
 							add_space = False
 						elif prev_key and (prev_key in NON_NEGATABLE_SCOPES or prev_key in KEYWORDS_TO_UPPER or (prev_is_block_real and prev_key.endswith(compact_nodes))):
 							add_space = False
-		
+
 
 				if str(key).startswith('[['):
 					add_space = True
