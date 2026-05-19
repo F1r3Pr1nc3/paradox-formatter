@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -116,18 +116,21 @@ def _negate_numerical_comparison_recursively(node, dry_run=False):
 				if not dry_run:
 					node['val'] = 'yes'
 				return True
-			# Applies only to `num_*` and `has_*` triggers.
-			if key.startswith(('has_', 'num_')):
+			# Applies only to `num_*`, `has_*`, and `count_*` triggers.
+			if key.startswith(('has_', 'num_', 'count_')):
 				if is_decimal_re.match(val):
 					if not dry_run:
 						if val == '0':
 							node['op'] = '>' # as they are always positive to be expect
-						else: node['op'] = '!='
-					return True
+						else:
+							node['op'] = '!='
+						return True
+					return False # TODO True: it is actually valid, we just do not want NOR extaction with '!=' !?
 				if val.startswith(('@','value:')):
 					if not dry_run:
 						node['op'] = '!='
-					return True
+						return True
+					return False # TODO True: it is actually valid, we just do not want NOR extaction with '!=' !?
 				# Special String Comparing Negation
 				if key in SPECIAL_NEGATION_VALUES and val in SPECIAL_NEGATION_VALUES[key]:
 					if not dry_run:
@@ -137,13 +140,27 @@ def _negate_numerical_comparison_recursively(node, dry_run=False):
 							node['op'] = '<'
 					return True
 		elif op in negated_ops:
-			if key.startswith(('has_', 'num_')):
+			if key.startswith(('has_', 'num_', 'count_')):
 				if is_decimal_re.match(val):
 					if not dry_run:
-						if val == '0' and op == '>':
-							node['op'] = '='
+						if key.startswith(('num_', 'count_')):
+							if val == '0' and op == '=':
+								node['op'] = '>'
+							elif val == '0' and op == '>':
+								node['op'] = '='
+							elif val == '1' and op == '>=':
+								node['op'] = '='
+								node['val'] = '0'
+							elif val == '1' and op == '<':
+								node['op'] = '>='
+								node['val'] = '1'
+							else:
+								node['op'] = negated_ops[op]
 						else:
-							node['op'] = negated_ops[op]
+							if val == '0' and op == '>':
+								node['op'] = '='
+							else:
+								node['op'] = negated_ops[op]
 					return True
 				# Exclude SPECIAL_NEGATION_VALUES triggers
 				if key in SPECIAL_NEGATION_VALUES and val in SPECIAL_NEGATION_VALUES[key]:
@@ -162,8 +179,27 @@ def _negate_numerical_comparison_recursively(node, dry_run=False):
 			# Only flip if the key is *exactly* 'value' or 'count'.
 			if child_key in ('value', 'count') and child_op in negated_ops:
 				# print(f"FOUND COMPARISON CHILD NODE:\n{child_key} {child}") # DEBUG
+				child_val = str(child.get('val', ''))
+
 				if not dry_run:
-					child['op'] = negated_ops[child_op]
+					if key.startswith(('num_', 'count_')):
+						if child_op == '=' and child_val == '0':
+							child['op'] = '>'
+						elif child_op == '>' and child_val == '0':
+							child['op'] = '='
+						elif child_op == '>=' and child_val == '1':
+							child['op'] = '='
+							child['val'] = '0'
+						elif child_op == '<' and child_val == '1':
+							child['op'] = '>='
+							child['val'] = '1'
+						else:
+							child['op'] = negated_ops[child_op]
+					else:
+						child['op'] = negated_ops[child_op]
+				# We do not want to extract if the result is != # The only exception is num_/count_ with value 0, which becomes >
+				elif child_op == '=' and not (child_val == '0' and key.startswith(('num_', 'count_'))):
+					return False # TODO True: it is actually valid, we just do not want NOR extaction with '!=' !?
 				return True
 
 		# --- RECURSIVE STEP ---
@@ -650,6 +686,16 @@ def _get_positive_form(node):
 				return [new_node]
 	return []
 
+def _has_keys_deep(nodes, target_keys):
+	for n in nodes:
+		if n['type'] != 'node': continue
+		if n.get('key') in target_keys:
+			return True
+		if isinstance(n.get('val'), list):
+			if _has_keys_deep(n['val'], target_keys):
+				return True
+	return False
+
 def _has_text(node):
 	if isinstance(node.get('val'), list):
 		for child in node['val']:
@@ -959,6 +1005,27 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 		if node['type'] == 'comment': new_list.append(node); continue
 		key = node.get('key', '')
 		if isinstance(node.get('val'), list):
+			# New Normalization Rule: convert < 1 to = 0 for non-negative blocks
+			if key.startswith(('count_', 'num_')):
+				for child in node['val']:
+					if child['type'] == 'node' and child.get('key') in ('value', 'count'):
+						child_op = child.get('op')
+						child_val = str(child.get('val', ''))
+						if child_op == '<' and child_val == '1':
+							child['op'] = '='
+							child['val'] = '0'
+							changed_any = True
+							print(f"Normalized {key} < 1 to = 0", file=sys.stderr)
+						elif child_op == '<=' and child_val == '0':
+							child['op'] = '='
+							child['val'] = '0'
+							changed_any = True
+							print(f"Normalized {key} <= 0 to = 0", file=sys.stderr)
+						elif child_op == '!=' and child_val == '0':
+							child['op'] = '>'
+							changed_any = True
+							print(f"Normalized {key} != 0 to > 0", file=sys.stderr)
+
 			if key in RAW_BLOCKS:
 				optimized_children = node['val']
 				child_changed = False
@@ -1206,7 +1273,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 
 				children_nodes = [n for n in node['val'] if n['type'] == 'node']
 				# NOR <=> AND = { 'NO'/'NOT' ... }
-				if children_nodes and all(_is_negation_node(c) for c in children_nodes) and any(c.get('key') in NEGATION_LOGIC_KEYS or c.get('val') == 'no' for c in children_nodes):
+				if children_nodes and all(_is_negation_node(c) or (c.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(c, dry_run=True)) for c in children_nodes) and any(c.get('key') in NEGATION_LOGIC_KEYS or c.get('val') == 'no' for c in children_nodes):
 					# User preference: All negative boolean should be merged into NOR, but avoid double negation ('yes' becoming 'no' inside).
 					# Only block 'yes' booleans.
 					if all(c.get('val') != 'yes' for c in children_nodes):
@@ -1217,6 +1284,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 						node['val'] = new_children
 						changed_any = True
 						print("Created NOR from AND-NO/NOT structure", file=sys.stderr)
+						key = 'NOR'
 
 			if key in ('AND', 'OR', 'NAND', 'NOR'):
 				children_nodes = [n for n in node['val'] if n['type'] == 'node']
@@ -1280,58 +1348,107 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 				if len(children_nodes) == 1:
 					node['key'] = 'NOT'
 					changed_any = True
+					key = 'NOT'
 
 				# --- NOR EXTRACTION (De Morgan Expansion) ---
 				# User preference: "move no boolean out of 'NOR' blocks"
-				# Extract children from NOR if they are 'no' booleans or NOT blocks (double negations).
+				# Extract children from NOR if they are 'no' booleans, NOT blocks (double negations), or negatable numerical comparisons.
 				elif parent_key not in EXPLICIT_LOGIC_KEYS:
-					nodes_to_extract = []
-					remaining_children = []
-					for item in node['val']:
-						if item['type'] == 'comment':
-							remaining_children.append(item)
-							continue
+					has_is_same_value = _has_keys_deep(node['val'], {'is_same_value', 'any_bypass'})
 
-						should_extract = False
-						# Case 1: Boolean 'no' (Double Negation)
-						if item.get('val') == 'no':
-							should_extract = True
-						# Case 2: NOT block
-						elif item.get('key') == 'NOT' and isinstance(item.get('val'), list):
-							should_extract = True
+					if has_is_same_value:
+						# ORDER-PRESERVING LOGIC (prevents short-circuit evaluation bugs when scope checks are involved)
+						should_extract_any = False
+						for item in node['val']:
+							if item['type'] == 'comment': continue
+							if item.get('val') == 'no': should_extract_any = True; break
+							elif item.get('key') == 'NOT' and isinstance(item.get('val'), list): should_extract_any = True; break
+							elif _negate_numerical_comparison_recursively(item, dry_run=True): should_extract_any = True; break
 
-						if should_extract:
-							child_copy = copy.deepcopy(item)
-							if item.get('key') == 'NOT':
-								# NOT inside NOR is !!A = A. Extract contents.
-								extracted_items = [c for c in item['val'] if c['type'] == 'node']
-								nodes_to_extract.extend(extracted_items)
+						if should_extract_any:
+							changed_any = True
+							print("Extracted items from NOR preserving order", file=sys.stderr)
+
+							current_nor_group = []
+							def flush_nor_group(group_to_flush):
+								if not group_to_flush: return
+								remaining_nodes = [n for n in group_to_flush if n['type'] == 'node']
+								if not remaining_nodes:
+									new_list.extend(group_to_flush)
+								elif len(remaining_nodes) == 1:
+									new_list.append({'key': 'NOT', 'op': '=', 'val': group_to_flush, 'type': 'node'})
+								else:
+									new_list.append({'key': 'NOR', 'op': '=', 'val': group_to_flush, 'type': 'node'})
+
+							for item in node['val']:
+								if item['type'] == 'comment':
+									current_nor_group.append(item)
+									continue
+
+								should_extract = False
+								if item.get('val') == 'no': should_extract = True
+								elif item.get('key') == 'NOT' and isinstance(item.get('val'), list): should_extract = True
+								elif _negate_numerical_comparison_recursively(item, dry_run=True): should_extract = True
+
+								if should_extract:
+									flush_nor_group(current_nor_group)
+									current_nor_group = []
+
+									child_copy = copy.deepcopy(item)
+									if item.get('key') == 'NOT':
+										extracted_items = [c for c in item['val'] if c['type'] == 'node']
+										new_list.extend(extracted_items)
+									else:
+										_negate_numerical_comparison_recursively(child_copy)
+										new_list.append(child_copy)
+								else:
+									current_nor_group.append(item)
+
+							flush_nor_group(current_nor_group)
+							continue # Skip appending original node
+					else:
+						# BUCKETING LOGIC (groups everything neatly, default behavior for cleaner code)
+						nodes_to_extract = []
+						remaining_children = []
+						for item in node['val']:
+							if item['type'] == 'comment':
+								remaining_children.append(item)
+								continue
+
+							should_extract = False
+							if item.get('val') == 'no':
+								should_extract = True
+							elif item.get('key') == 'NOT' and isinstance(item.get('val'), list):
+								should_extract = True
+							elif _negate_numerical_comparison_recursively(item, dry_run=True):
+								should_extract = True
+
+							if should_extract:
+								child_copy = copy.deepcopy(item)
+								if item.get('key') == 'NOT':
+									extracted_items = [c for c in item['val'] if c['type'] == 'node']
+									nodes_to_extract.extend(extracted_items)
+								else:
+									_negate_numerical_comparison_recursively(child_copy)
+									nodes_to_extract.append(child_copy)
 							else:
-								_negate_numerical_comparison_recursively(child_copy)
-								nodes_to_extract.append(child_copy)
-						else:
-							remaining_children.append(item)
+								remaining_children.append(item)
 
-					if nodes_to_extract:
-						# Replace the NOR block with extracted items + remaining NOR
-						new_list.extend(nodes_to_extract)
-						changed_any = True
-						print("Extracted double negations from NOR", file=sys.stderr)
+						if nodes_to_extract:
+							new_list.extend(nodes_to_extract)
+							changed_any = True
+							print("Extracted double negations from NOR (bucketing)", file=sys.stderr)
 
-						# Filter out non-node items from remaining children to see if NOR is still needed
-						remaining_nodes = [n for n in remaining_children if n['type'] == 'node']
-						if not remaining_nodes:
-							# Add only comments from NOR if no logic left
-							comments_only = [c for c in remaining_children if c['type'] == 'comment']
-							new_list.extend(comments_only)
-							continue # Skip original node
-						else:
-							# Update original node with remaining children
-							if len(remaining_nodes) == 1:
-								node['key'] = 'NOT'
-							node['val'] = remaining_children
-							# Continue to append modified node
-
+							remaining_nodes = [n for n in remaining_children if n['type'] == 'node']
+							if not remaining_nodes:
+								comments_only = [c for c in remaining_children if c['type'] == 'comment']
+								new_list.extend(comments_only)
+								continue
+							else:
+								if len(remaining_nodes) == 1:
+									node['key'] = 'NOT'
+								node['val'] = remaining_children
+								# Continue to append modified node
 				# Check for common factors in AND children (De Morgan's Laws extraction)
 				# NOR = { AND={A B} AND={A C} }  ->  (NOT={A}) OR (NOR={ AND={B} AND={C} })
 				# Logic: !( (A&B) | (A&C) ) = !( A & (B|C) ) = !A | !(B|C)
@@ -1378,6 +1495,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 						# Clear specific comments that were moved to remaining_nor_node
 						if '_cm_open' in node: del node['_cm_open']
 						if '_cm_close' in node: del node['_cm_close']
+						key = 'OR'
 
 			elif key == 'NOT':
 				children_nodes = [n for n in node['val'] if n['type'] == 'node']
@@ -1454,6 +1572,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 							node['val'] = child['val']
 							changed_any = True
 							print("Created NAND from NOT-AND", file=sys.stderr)
+							key = 'NAND'
 						# Double Negation: NOT = { NOT = { ... } } -> ...
 						elif child.get('key') == 'NOT' and isinstance(child.get('val'), list):
 							# Replace NOT node with the content of the child NOT
@@ -1485,6 +1604,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 
 							changed_any = True
 							print("Removed double negation NOT-NOT", file=sys.stderr)
+							key = 'AND'
 
 						# NOR <=> NOT = { OR ... }
 						elif child.get('key') == 'OR' and isinstance(child.get('val'), list):
@@ -1492,6 +1612,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 							node['val'] = child['val']
 							changed_any = True
 							print("Created NOR from NOT-OR", file=sys.stderr)
+							key = 'NOR'
 						# Simplification for `NOT = { key = yes }` to `key = no`
 						elif child.get('val') == 'yes' and not isinstance(child.get('val'), list):
 							cm_open = node.get('_cm_open')
@@ -1588,6 +1709,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 				if len(children_nodes) == 1:
 					node['key'] = 'NOT'
 					changed_any = True
+					key = 'NOT'
 
 			elif key == 'owner':
 				children_nodes = [n for n in node['val'] if n['type'] == 'node']
@@ -1886,7 +2008,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 					print("Created NAND from OR-NOT structure", file=sys.stderr)
 
 				# NAND <=> OR = { 'NO'/'NOT' ... }
-				elif all(_is_negation_node(n) for n in children) and any(n.get('key') in NEGATION_LOGIC_KEYS or n.get('val') == 'no' for n in children):
+				elif all(_is_negation_node(n) or (n.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(n, dry_run=True)) for n in children) and any(n.get('key') in NEGATION_LOGIC_KEYS or n.get('val') == 'no' for n in children):
 					new_children = []
 					for item in node['val']:
 						if item['type'] == 'comment':
@@ -1926,6 +2048,26 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 								new_list.append(copy.deepcopy(common))
 							node['val'] = modified_children # Update the OR node's children
 							print("Simplified common factors of AND", file=sys.stderr)
+		else:
+			# Normalization Rule for leaf nodes: convert < 1 or <= 0 to = 0 for non-negative triggers
+			if key.startswith(('count_', 'num_')):
+				op = node.get('op')
+				val = str(node.get('val', ''))
+				if op == '<' and val == '1':
+					node['op'] = '='
+					node['val'] = '0'
+					changed_any = True
+					print(f"Normalized {key} < 1 to = 0", file=sys.stderr)
+				elif op == '<=' and val == '0':
+					node['op'] = '='
+					node['val'] = '0'
+					changed_any = True
+					print(f"Normalized {key} <= 0 to = 0", file=sys.stderr)
+				elif op == '!=' and val == '0':
+					node['op'] = '>'
+					changed_any = True
+					print(f"Normalized {key} != 0 to > 0", file=sys.stderr)
+
 		new_list.append(node)
 	return new_list, changed_any
 
