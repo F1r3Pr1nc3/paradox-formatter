@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.5.2"
+__version__ = "0.5.3"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -470,7 +470,7 @@ def parse(tokens, text):
 
 	if stack:
 		raise ValueError("Unbalanced braces: Missing '}' at the end of the file.")
-		
+
 	return current_list
 
 # --- 3. Nodes Equal ---
@@ -1359,7 +1359,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 				# User preference: "move no boolean out of 'NOR' blocks"
 				# Extract children from NOR if they are 'no' booleans, NOT blocks (double negations), or negatable numerical comparisons.
 				elif parent_key not in EXPLICIT_LOGIC_KEYS:
-					has_is_same_value = _has_keys_deep(node['val'], {'is_same_value', 'any_bypass'})
+					has_is_same_value = _has_keys_deep(node['val'], {'is_same_value', 'is_same_empire', 'habitability'})
 
 					if has_is_same_value:
 						# ORDER-PRESERVING LOGIC (prevents short-circuit evaluation bugs when scope checks are involved)
