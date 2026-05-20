@@ -323,7 +323,8 @@ def parse(tokens, text):
 			i += 1; continue
 
 		if token_val == "}":
-			if not stack: break
+			if not stack:
+				raise ValueError(f"Unbalanced braces: Extra '}}' at line {token_line}")
 			finished_list = current_list
 			current_list = stack.pop()
 			if current_list and current_list[-1].get('val') == 'PENDING_BLOCK':
@@ -466,6 +467,10 @@ def parse(tokens, text):
 				current_list.append(node)
 			i += 1; continue
 		i += 1
+
+	if stack:
+		raise ValueError("Unbalanced braces: Missing '}' at the end of the file.")
+		
 	return current_list
 
 # --- 3. Nodes Equal ---
@@ -2390,9 +2395,9 @@ def block_to_string(block_list):
 
 # --- 9. Main ---
 def process_text(content):
+	original_content = content
 	try:
 		content = content.replace('\r\n', '\n')
-		original_content = content
 		tokens = tokenize(content)
 		tree = parse(tokens, content)
 
@@ -2419,7 +2424,7 @@ def process_text(content):
 		return original_content, False
 	except Exception as e:
 		print(f"[Logic Optimizer] Error: {e}", file=sys.stderr)
-		return content, False
+		return original_content, False
 
 if __name__ == "__main__":
 	# Force UTF-8 for stdin/stdout to handle unicode correctly across platforms/locales
