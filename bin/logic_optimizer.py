@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -835,7 +835,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 				if parent_key not in ('OR', 'NOR'):
 					if key == 'AND':
 						can_merge = True
-					elif CAN_MERGE_SCOPES and level > 2 and key != 'planet' and SCOPES_RE.match(key):
+					elif CAN_MERGE_SCOPES and level >= 2 and key != 'planet' and SCOPES_RE.match(key):
 						can_merge = True
 				elif key == 'OR':
 					can_merge = True
@@ -1357,10 +1357,10 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 
 				# --- NOR EXTRACTION (De Morgan Expansion) ---
 				# User preference: "move no boolean out of 'NOR' blocks"
-				# Extract children from NOR if they are 'no' booleans or NOT blocks (double negations).
+				# Extract children from NOR if they are 'no' booleans or NOT blocks (double negations). # not negatable numerical comparisons
 				elif parent_key not in EXPLICIT_LOGIC_KEYS:
-					has_is_same_value = _has_keys_deep(node['val'], {'is_same_value', 'is_same_empire', 'habitability', 'any_bypass'})
-					
+					has_is_same_value = _has_keys_deep(node['val'], {'is_same_value', 'is_same_empire', 'habitability'})
+
 					if has_is_same_value:
 						# ORDER-PRESERVING LOGIC (prevents short-circuit evaluation bugs when scope checks are involved)
 						should_extract_any = False
@@ -1368,11 +1368,12 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 							if item['type'] == 'comment': continue
 							if item.get('val') == 'no': should_extract_any = True; break
 							elif item.get('key') == 'NOT' and isinstance(item.get('val'), list): should_extract_any = True; break
-						
+							# elif _negate_numerical_comparison_recursively(item, dry_run=True): should_extract_any = True; break
+
 						if should_extract_any:
 							changed_any = True
 							print("Extracted items from NOR preserving order", file=sys.stderr)
-							
+
 							current_nor_group = []
 							def flush_nor_group(group_to_flush):
 								if not group_to_flush: return
@@ -1392,21 +1393,22 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 								should_extract = False
 								if item.get('val') == 'no': should_extract = True
 								elif item.get('key') == 'NOT' and isinstance(item.get('val'), list): should_extract = True
+								# elif _negate_numerical_comparison_recursively(item, dry_run=True): should_extract = True
 
 								if should_extract:
 									flush_nor_group(current_nor_group)
 									current_nor_group = []
-									
+
 									child_copy = copy.deepcopy(item)
 									if item.get('key') == 'NOT':
 										extracted_items = [c for c in item['val'] if c['type'] == 'node']
 										new_list.extend(extracted_items)
 									else:
-										child_copy['val'] = 'yes'
+										child_copy['val'] = 'yes' # _negate_numerical_comparison_recursively(child_copy)
 										new_list.append(child_copy)
 								else:
 									current_nor_group.append(item)
-							
+
 							flush_nor_group(current_nor_group)
 							continue # Skip appending original node
 					else:
@@ -1423,6 +1425,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 								should_extract = True
 							elif item.get('key') == 'NOT' and isinstance(item.get('val'), list):
 								should_extract = True
+							# elif _negate_numerical_comparison_recursively(item, dry_run=True): should_extract = True
 
 							if should_extract:
 								child_copy = copy.deepcopy(item)
@@ -1430,7 +1433,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 									extracted_items = [c for c in item['val'] if c['type'] == 'node']
 									nodes_to_extract.extend(extracted_items)
 								else:
-									child_copy['val'] = 'yes'
+									child_copy['val'] = 'yes' # _negate_numerical_comparison_recursively(child_copy)
 									nodes_to_extract.append(child_copy)
 							else:
 								remaining_children.append(item)
@@ -1444,7 +1447,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 							if not remaining_nodes:
 								comments_only = [c for c in remaining_children if c['type'] == 'comment']
 								new_list.extend(comments_only)
-								continue 
+								continue
 							else:
 								if len(remaining_nodes) == 1:
 									node['key'] = 'NOT'
