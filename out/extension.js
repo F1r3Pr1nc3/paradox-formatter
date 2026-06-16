@@ -39,6 +39,10 @@ function formatWithPythonBridge(text, forceCompact) {
 			args.push('--no-compact');
 		}
 
+		if (config.get('useSafeNavigation')) {
+			args.push('--use-safe-navigation');
+		}
+
 		// 1. Spawn Python process
 		const pythonProcess = spawn(pythonPath, args);
 
@@ -289,8 +293,49 @@ function activate(ctx) {
 
 	const formatter = new ParadoxDocumentFormatter();
 
+	const formatAllCommand = vscode.commands.registerCommand('paradox-formatter.formatAllFiles', async () => {
+		const files = await vscode.workspace.findFiles('**/*.txt', '{node_modules,.git,out,bin}/**');
+		if (files.length === 0) {
+			vscode.window.showInformationMessage('No text files found to format.');
+			return;
+		}
+		
+		vscode.window.withProgress({
+			location: vscode.ProgressLocation.Notification,
+			title: "Formatting all Paradox files...",
+			cancellable: true
+		}, async (progress, token) => {
+			let formattedCount = 0;
+			let total = files.length;
+			for (let i = 0; i < total; i++) {
+				if (token.isCancellationRequested) {
+					break;
+				}
+				const file = files[i];
+				progress.report({ message: `Processing ${i + 1}/${total}`, increment: (100 / total) });
+				try {
+					const document = await vscode.workspace.openTextDocument(file);
+					const text = document.getText();
+					const result = await formatWithPythonBridge(text);
+					if (result.changed) {
+						const edit = new vscode.WorkspaceEdit();
+						const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
+						edit.replace(file, fullRange, result.content);
+						await vscode.workspace.applyEdit(edit);
+						await document.save();
+						formattedCount++;
+					}
+				} catch (err) {
+					console.error(`Error formatting ${file.fsPath}:`, err);
+				}
+			}
+			vscode.window.showInformationMessage(`Formatted ${formattedCount} files.`);
+		});
+	});
+
 	ctx.subscriptions.push(
 		vscode.languages.registerDocumentFormattingEditProvider(selector, formatter),
-		vscode.languages.registerDocumentRangeFormattingEditProvider(selector, formatter)
+		vscode.languages.registerDocumentRangeFormattingEditProvider(selector, formatter),
+		formatAllCommand
 	);
 }

@@ -20,8 +20,9 @@ __version__ = "0.5.4"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
-CAN_MERGE_SCOPES = False # Dev option to allow merging of scopes like owner, system, etc. (with some safeguards)
+CAN_MERGE_SCOPES = False # Dev option to allow merging of scopes like owner, system, etc. (with some safeguards) TODO: restrict more
 NO_COMPACT = False
+USE_SAFE_NAVIGATION = False
 
 NON_ANY_TRIGGERS = { # STEADY UPDATE: unfortunataly unharmonized triggers
 	"count_deposits",
@@ -1004,6 +1005,43 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 					i += 1
 
 		node_list = new_list
+
+	# --- SAFE NAVIGATION (?=) OPTIMIZATION ---
+	if USE_SAFE_NAVIGATION and parent_key != 'NAND':
+		i = 0
+		while i < len(node_list):
+			node = node_list[i]
+			if node['type'] == 'node' and node.get('key') == 'exists' and node.get('op') == '=':
+				scope_name = str(node.get('val', ''))
+				if scope_name:
+					# Look for a sibling with key == scope_name
+					sibling_idx = -1
+					for j in range(len(node_list)):
+						if j != i and node_list[j]['type'] == 'node' and str(node_list[j].get('key', '')) == scope_name:
+							sibling_idx = j
+							break
+					
+					if sibling_idx != -1:
+						sibling = node_list[sibling_idx]
+						# Found a match!
+						sibling['key'] = scope_name + '?'
+						
+						# Move comments from exists node to sibling if possible
+						# Note: keeping it simple. If exists had an inline comment, prepend it to sibling's inline.
+						cm_inline = node.get('_cm_inline')
+						if cm_inline:
+							sibling['_cm_inline'] = cm_inline + sibling.get('_cm_inline', '')
+						
+						# Remove the exists node
+						node_list.pop(i)
+						changed_any = True
+						print(f"Applied safe navigation: {scope_name}?", file=sys.stderr)
+						# i does not increment since we removed an item at i.
+						# However, if sibling_idx < i, removing i doesn't shift sibling.
+						# Wait, if we pop(i), the next element becomes i. 
+						# We should just 'continue' so we check the new element at i.
+						continue
+			i += 1
 
 	new_list = []
 	for node in node_list:
@@ -2081,11 +2119,12 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 force_compact_keys = {"hsv", "rgb", "rgb255"} # for 'key_val' , "color"
 compact_nodes = (
 	"_event", "switch", "tags", "NOT", "_technology", "_offset", "_flag", "flags", "_opinion_modifier", "_variable", "give_tech_no_error_effect", "colors",
-	"_opinion_modifier", "add_ship_type_from_debris", "position", "color"
+	"_opinion_modifier", "add_ship_type_from_debris", "position", "color",
+	"leader_class", # pop_faction_types
 ) # Never LB if possible
 not_compact_nodes = (
 	"cost", "upkeep", "produces", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect", "trigger", "default",
-	"settings", "weight", "pop_amount_change_category"
+	"settings", "weight", "pop_amount_change_category", "ai_weight"
 ) # Always LB
 not_compact_nodes += NON_NEGATABLE_SCOPES
 
@@ -2436,9 +2475,11 @@ if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--no-compact", action="store_true", help="Disable compacting of nodes")
+	parser.add_argument("--use-safe-navigation", action="store_true", help="Convert exists = scope checks to scope? = safe navigation")
 	args, unknown = parser.parse_known_args()
 
 	NO_COMPACT = args.no_compact
+	USE_SAFE_NAVIGATION = args.use_safe_navigation
 
 	stdin_content = sys.stdin.read()
 	new_content, changed = process_text(stdin_content)

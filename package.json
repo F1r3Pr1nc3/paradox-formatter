@@ -40,6 +40,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Enable formatting when pasting or formatting selection."
+                },
+                "paradox-formatter.useSafeNavigation": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Convert \"exists = xyz\" followed by \"xyz = ...\" into safe navigation \"xyz? = ...\" (Stellaris v4.4+)."
                 }
             }
         },
@@ -78,30 +83,30 @@
                 ],
                 "configuration": "./language-configuration.json"
             },
-			{
-				"id": "hoi4"
-			},
-			{
-				"id": "ck2"
-			},
-			{
-				"id": "eu4"
-			},
-			{
-				"id": "imperator"
-			},
-			{
-				"id": "vic2"
-			},
-			{
-				"id": "ck3"
-			},
-			{
-				"id": "vic3"
-			},
-			{
-				"id": "eu5"
-			}
+            {
+                "id": "hoi4"
+            },
+            {
+                "id": "ck2"
+            },
+            {
+                "id": "eu4"
+            },
+            {
+                "id": "imperator"
+            },
+            {
+                "id": "vic2"
+            },
+            {
+                "id": "ck3"
+            },
+            {
+                "id": "vic3"
+            },
+            {
+                "id": "eu5"
+            }
         ],
         "grammars": [
             {
@@ -129,6 +134,12 @@
                 "scopeName": "source.mod",
                 "path": "./syntaxes/eu4.tmLanguage.json"
             }
+        ],
+        "commands": [
+            {
+                "command": "paradox-formatter.formatAllFiles",
+                "title": "Paradox Formatter: Format all files"
+            }
         ]
     },
     "activationEvents": [
@@ -143,7 +154,8 @@
         "onLanguage:vic3",
         "onLanguage:eu5",
         "onCommand:paradox-script-formatter.formatDocument",
-        "onCommand:paradox-script-formatter.formatSelection"
+        "onCommand:paradox-script-formatter.formatSelection",
+        "onCommand:paradox-formatter.formatAllFiles"
     ],
     "main": "./out/extension",
     "scripts": {
