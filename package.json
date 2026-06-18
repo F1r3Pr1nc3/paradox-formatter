@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.5.4",
+    "version": "0.5.5",
     "preview": true,
     "repository": {
         "type": "git",
@@ -138,7 +138,7 @@
         "commands": [
             {
                 "command": "paradox-formatter.formatAllFiles",
-                "title": "Paradox Formatter: Format all files"
+                "title": "PDX Formatter: Format all files"
             }
         ]
     },

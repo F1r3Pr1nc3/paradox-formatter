@@ -1,6 +1,6 @@
 # Paradox Script Formatter for VS Code
 
-![Version](https://img.shields.io/badge/version-0.5.4-blue.svg)
+![Version](https://img.shields.io/badge/version-0.5.5-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 A robust, whitespace-aware formatter for Paradox Interactive game scripts (Stellaris, HOI4, EU4, CK3).
@@ -95,6 +95,12 @@ limit = {
 }
 ```
 
+### 5. Format All Files
+You can trigger a bulk formatting operation across all open files or the entire workspace using the `PDX Formatter: Format all files` command.
+
+### 6. Safe Navigation Support
+Enable or disable safe navigation logic (default: false). When enabled, the formatter automatically converts `exists = xyz` followed by `xyz = ...` into the safe navigation syntax `xyz? = ...` (Stellaris v4.4+).
+
 -----
 
 ## 🚀 Installation
@@ -103,17 +109,17 @@ limit = {
 
 You can install the packaged extension directly using the `.vsix` file.
 
-1.  **Download** the `paradox-script-formatter-0.5.4.vsix` file.
+1.  **Download** the `paradox-script-formatter-0.5.5.vsix` file.
 2.  Open **VS Code**.
 3.  Go to the **Extensions View** (`Ctrl+Shift+X`).
 4.  Click the **three dots icon (...)** at the top-right of the Extensions menu.
 5.  Select **"Install from VSIX..."**.
-6.  Locate and select the `paradox-script-formatter-0.5.4.vsix` file.
+6.  Locate and select the `paradox-script-formatter-0.5.5.vsix` file.
 
 Alternatively, you can install it via the command line:
 
 ```bash
-code --install-extension paradox-script-formatter-0.5.4.vsix
+code --install-extension paradox-script-formatter-0.5.5.vsix
 ```
 
 ### Supported File Types
@@ -138,7 +144,7 @@ To ensure this formatter is used automatically when you save a file, you need to
 
 ```json
 {
-    // Sets the Paradox Formatter as the default for all languages where it applies
+    // Sets the PDX Formatter as the default for all languages where it applies
     "editor.defaultFormatter": "f1r3pr1nc3.paradox-script-formatter",
 
     // Recommended: Set preferred indentation style (if not using .editorconfig)
