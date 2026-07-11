@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.5.5"
+__version__ = "0.5.6"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -1041,6 +1041,99 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 						# Wait, if we pop(i), the next element becomes i. 
 						# We should just 'continue' so we check the new element at i.
 						continue
+			elif node['type'] == 'node' and node.get('key') == 'if' and node.get('op') == '=':
+				if_children = node.get('val')
+				if isinstance(if_children, list):
+					# Find the limit block
+					limit_node = None
+					limit_idx = -1
+					for idx, child in enumerate(if_children):
+						if child['type'] == 'node' and child.get('key') == 'limit' and child.get('op') == '=' and isinstance(child.get('val'), list):
+							limit_node = child
+							limit_idx = idx
+							break
+					
+					if limit_node:
+						# Find all exists checks in the limit block
+						exists_nodes = []
+						for idx, child in enumerate(limit_node['val']):
+							if child['type'] == 'node' and child.get('key') == 'exists' and child.get('op') == '=':
+								target_name = str(child.get('val', ''))
+								if target_name:
+									exists_nodes.append((child, idx, target_name))
+						
+						# For each exists check, look for a sibling outside limit in if_children
+						optimized_any_for_this_if = False
+						for exists_node, exists_idx, target_name in exists_nodes:
+							sibling_node = None
+							sibling_idx = -1
+							for idx, child in enumerate(if_children):
+								if idx != limit_idx and child['type'] == 'node' and str(child.get('key', '')) == target_name:
+									sibling_node = child
+									sibling_idx = idx
+									break
+							
+							if sibling_node:
+								# Found a match!
+								# Determine if we can do full collapse or partial simplification
+								other_limit_conditions = [
+									c for c in limit_node['val']
+									if c['type'] == 'node' and (c.get('key') != 'exists' or str(c.get('val', '')) != target_name)
+								]
+								other_if_actions = [
+									c for idx, c in enumerate(if_children)
+									if c['type'] == 'node' and idx != limit_idx and idx != sibling_idx
+								]
+								
+								if not other_if_actions:
+									if not other_limit_conditions:
+										# Case A: Complete collapse
+										sibling_node['key'] = target_name + '?'
+										
+										# Prepend comments from exists node to sibling if possible
+										cm_inline = exists_node.get('_cm_inline')
+										if cm_inline:
+											sibling_node['_cm_inline'] = cm_inline + sibling_node.get('_cm_inline', '')
+										
+										# Collect comments from limit node and if children
+										comments_to_keep = []
+										for c in limit_node['val']:
+											if c['type'] == 'comment':
+												comments_to_keep.append(c)
+										for c in if_children:
+											if c['type'] == 'comment':
+												comments_to_keep.append(c)
+										
+										nodes_to_insert = comments_to_keep + [sibling_node]
+										node_list[i:i+1] = nodes_to_insert
+										changed_any = True
+										optimized_any_for_this_if = True
+										print(f"Collapsed if-exists check for target: {target_name}?", file=sys.stderr)
+										break # break exists_nodes loop since we replaced the whole 'if' node
+									else:
+										# Case B: Partial simplification
+										sibling_node['key'] = target_name + '?'
+										
+										# Prepend comments from exists node to sibling if possible
+										cm_inline = exists_node.get('_cm_inline')
+										if cm_inline:
+											sibling_node['_cm_inline'] = cm_inline + sibling_node.get('_cm_inline', '')
+										
+										# Remove the exists node from limit
+										limit_node['val'].pop(exists_idx)
+										
+										# Check if limit has only comments now
+										if not any(c['type'] == 'node' for c in limit_node['val']):
+											# Remove the limit node from if_children
+											if_children.pop(limit_idx)
+										
+										changed_any = True
+										optimized_any_for_this_if = True
+										print(f"Applied safe navigation to sibling in if: {target_name}?", file=sys.stderr)
+										break # break because we modified the lists we are iterating
+						
+						if optimized_any_for_this_if:
+							continue
 			i += 1
 
 	new_list = []
