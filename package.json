@@ -44,7 +44,7 @@
                 "paradox-formatter.useSafeNavigation": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Convert \"exists = xyz\" immediately followed by \"xyz = ...\" (comments may sit in between) into safe navigation \"xyz? = ...\" (Stellaris v4.4+)."
+                    "description": "Convert \"exists = xyz\" immediately followed by \"xyz = ...\" (comments may sit in between) into safe navigation \"xyz? = ...\" (Stellaris v4.4+). Also folds the scope-less has_owner = yes guard into a directly following owner/space_owner block."
                 }
             }
         },

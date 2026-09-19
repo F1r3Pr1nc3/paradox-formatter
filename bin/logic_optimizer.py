@@ -123,6 +123,10 @@ TRIGGER_CONTEXT_SCOPES = {
 	'NOR', 'NAND', 'NOT', 'OR', 'AND',
 	'modifier', 'ai_weight', 'weight_modifier', 'calc_true_if',
 }
+# 'has_owner = yes' does not name a scope, so it can only be folded into a directly
+# following owner-like scope block. Every entry must be a scope link that exists
+# whenever 'has_owner = yes' holds on the same scope (see safe navigation section).
+HAS_OWNER_SCOPE_GUARDS = ('owner', 'space_owner')
 # NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
 
 # SAFE_MERGE_PARENTS = {
@@ -1136,43 +1140,53 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
-			if node['type'] == 'node' and node.get('key') == 'exists' and node.get('op') == '=':
-				scope_name = str(node.get('val', ''))
-				if scope_name:
-					# Only replace a *directly adjacent* 'exists = x' + 'x = { ... }' pair
-					# (comment nodes in between are fine). If other nodes sit in between, the
-					# 'exists' check also guards those nodes and must be preserved.
-					sibling_idx = -1
-					j = i + 1
-					while j < len(node_list):
-						cand = node_list[j]
-						if cand['type'] == 'comment':
-							j += 1
-							continue
-						if cand['type'] == 'node' and str(cand.get('key', '')) == scope_name and isinstance(cand.get('val'), list):
-							sibling_idx = j
-						break
+			guard_key = str(node.get('key', ''))
+			guard_scopes = None
+			if node['type'] == 'node' and guard_key == 'exists' and node.get('op') == '=':
+				guard_scope = str(node.get('val', ''))
+				if guard_scope:
+					guard_scopes = (guard_scope,)
+			elif (node['type'] == 'node' and guard_key == 'has_owner' and node.get('op') == '='
+					and str(node.get('val', '')).lower() == 'yes'
+					and parent_key not in ('OR', 'NOR', 'NOT', 'calc_true_if')):
+				# 'has_owner = yes' names no scope, so it may only be folded into a directly
+				# following owner-like block (HAS_OWNER_SCOPE_GUARDS) and only in a
+				# conjunctive list, where 'guard AND scope' really is 'scope?'.
+				guard_scopes = HAS_OWNER_SCOPE_GUARDS
 
-					if sibling_idx != -1:
-						sibling = node_list[sibling_idx]
-						# Found a match!
-						sibling['key'] = scope_name + '?'
-
-						# Move comments from exists node to sibling if possible
-						# Note: keeping it simple. If exists had an inline comment, prepend it to sibling's inline.
-						cm_inline = node.get('_cm_inline')
-						if cm_inline:
-							sibling['_cm_inline'] = cm_inline + sibling.get('_cm_inline', '')
-
-						# Remove the exists node
-						node_list.pop(i)
-						changed_any = True
-						print(f"Applied safe navigation: {scope_name}?", file=sys.stderr)
-						# i does not increment since we removed an item at i.
-						# However, if sibling_idx < i, removing i doesn't shift sibling.
-						# Wait, if we pop(i), the next element becomes i.
-						# We should just 'continue' so we check the new element at i.
+			if guard_scopes:
+				# Only replace a *directly adjacent* guard + scope block pair
+				# (comment nodes in between are fine). If other nodes sit in between, the
+				# guard also covers those nodes and must be preserved.
+				sibling_idx = -1
+				j = i + 1
+				while j < len(node_list):
+					cand = node_list[j]
+					if cand['type'] == 'comment':
+						j += 1
 						continue
+					if cand['type'] == 'node' and str(cand.get('key', '')) in guard_scopes and isinstance(cand.get('val'), list):
+						sibling_idx = j
+					break
+
+				if sibling_idx != -1:
+					sibling = node_list[sibling_idx]
+					scope_name = str(sibling.get('key', ''))
+					# Found a match!
+					sibling['key'] = scope_name + '?'
+
+					# Move an inline comment from the guard node to the scope node if possible
+					cm_inline = node.get('_cm_inline')
+					if cm_inline:
+						sibling['_cm_inline'] = cm_inline + sibling.get('_cm_inline', '')
+
+					# Remove the guard node
+					node_list.pop(i)
+					changed_any = True
+					print(f"Applied safe navigation: {scope_name}?", file=sys.stderr)
+					# i does not increment since we removed an item at i.
+					# The next element now sits at i, so re-check it.
+					continue
 			elif node['type'] == 'node' and node.get('key') == 'if' and node.get('op') == '=':
 				if_children = node.get('val')
 				if isinstance(if_children, list):

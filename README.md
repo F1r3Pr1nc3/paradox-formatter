@@ -99,7 +99,7 @@ limit = {
 You can trigger a bulk formatting operation across all open files or the entire workspace using the `PDX Formatter: Format all files` command.
 
 ### 6. Safe Navigation Support
-Enable or disable safe navigation logic (default: false). When enabled, the formatter converts `exists = xyz` **immediately** followed by `xyz = ...` (only comment lines may sit in between) into the safe navigation syntax `xyz? = ...` (Stellaris v4.4+). If other conditions sit between the two nodes, the `exists = xyz` check also guards them, so it is preserved.
+Enable or disable safe navigation logic (default: false). When enabled, the formatter converts `exists = xyz` **immediately** followed by `xyz = ...` (only comment lines may sit in between) into the safe navigation syntax `xyz? = ...` (Stellaris v4.4+). If other conditions sit between the two nodes, the `exists = xyz` check also guards them, so it is preserved. The scope-less guard `has_owner = yes` is folded the same way, but only into a directly following `owner` or `space_owner` block, and only in conjunctive lists (never inside `OR`/`NOR`/`NOT`/`calc_true_if`).
 
 -----
 
