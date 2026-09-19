@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.5.5",
+    "version": "0.5.6",
     "preview": true,
     "repository": {
         "type": "git",
@@ -44,7 +44,7 @@
                 "paradox-formatter.useSafeNavigation": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Convert \"exists = xyz\" followed by \"xyz = ...\" into safe navigation \"xyz? = ...\" (Stellaris v4.4+)."
+                    "description": "Convert \"exists = xyz\" immediately followed by \"xyz = ...\" (comments may sit in between) into safe navigation \"xyz? = ...\" (Stellaris v4.4+)."
                 }
             }
         },

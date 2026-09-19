@@ -1,3 +1,4 @@
 {
-    "editor.autoIndentOnPaste": true
+    "editor.autoIndentOnPaste": true,
+    "chat.disableAIFeatures": false
 }

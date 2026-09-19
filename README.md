@@ -1,6 +1,6 @@
 # Paradox Script Formatter for VS Code
 
-![Version](https://img.shields.io/badge/version-0.5.5-blue.svg)
+![Version](https://img.shields.io/badge/version-0.5.6-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 A robust, whitespace-aware formatter for Paradox Interactive game scripts (Stellaris, HOI4, EU4, CK3).
@@ -99,7 +99,7 @@ limit = {
 You can trigger a bulk formatting operation across all open files or the entire workspace using the `PDX Formatter: Format all files` command.
 
 ### 6. Safe Navigation Support
-Enable or disable safe navigation logic (default: false). When enabled, the formatter automatically converts `exists = xyz` followed by `xyz = ...` into the safe navigation syntax `xyz? = ...` (Stellaris v4.4+).
+Enable or disable safe navigation logic (default: false). When enabled, the formatter converts `exists = xyz` **immediately** followed by `xyz = ...` (only comment lines may sit in between) into the safe navigation syntax `xyz? = ...` (Stellaris v4.4+). If other conditions sit between the two nodes, the `exists = xyz` check also guards them, so it is preserved.
 
 -----
 
@@ -109,17 +109,17 @@ Enable or disable safe navigation logic (default: false). When enabled, the form
 
 You can install the packaged extension directly using the `.vsix` file.
 
-1.  **Download** the `paradox-script-formatter-0.5.5.vsix` file.
+1.  **Download** the `paradox-script-formatter-0.5.6.vsix` file.
 2.  Open **VS Code**.
 3.  Go to the **Extensions View** (`Ctrl+Shift+X`).
 4.  Click the **three dots icon (...)** at the top-right of the Extensions menu.
 5.  Select **"Install from VSIX..."**.
-6.  Locate and select the `paradox-script-formatter-0.5.5.vsix` file.
+6.  Locate and select the `paradox-script-formatter-0.5.6.vsix` file.
 
 Alternatively, you can install it via the command line:
 
 ```bash
-code --install-extension paradox-script-formatter-0.5.5.vsix
+code --install-extension paradox-script-formatter-0.5.6.vsix
 ```
 
 ### Supported File Types

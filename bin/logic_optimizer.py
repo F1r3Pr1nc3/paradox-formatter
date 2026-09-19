@@ -22,7 +22,42 @@ USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
 CAN_MERGE_SCOPES = False # Dev option to allow merging of scopes like owner, system, etc. (with some safeguards) TODO: restrict more
 NO_COMPACT = False
-USE_SAFE_NAVIGATION = False
+USE_SAFE_NAVIGATION = False # v4.4:
+
+def configure_for_stellaris_version(version_nr):
+	"""
+	Set feature flags based on the Stellaris version being targeted.
+	Call this from your driver script before invoking process_text().
+
+	Accepts a string ('4.5', 'v4.4', '3.12') or a numeric float/int (4.5, 4).
+	Float inputs use the integer part as major and the decimal as minor
+	(e.g. 4.5 → major=4, minor=5).
+
+	Example:
+	    import logic_optimizer
+	    logic_optimizer.configure_for_stellaris_version('4.5')   # enables safe nav
+	    logic_optimizer.configure_for_stellaris_version(4.5)     # same, float
+	    logic_optimizer.configure_for_stellaris_version('3.12')  # disables safe nav
+	"""
+	global USE_SAFE_NAVIGATION
+	try:
+		if isinstance(version_nr, (int, float)):
+			# Numeric input: extract major/minor directly
+			major = int(version_nr)
+			# Fractional part: e.g. 4.5 → 5, 4.0 → 0
+			minor = int(round((version_nr - major) * 100))
+			# Strip trailing zeros: 4.50 → minor=5, not 50
+			while minor and minor % 10 == 0:
+				minor //= 10
+		else:
+			clean = str(version_nr).strip().lstrip('vV')
+			parts = clean.split('.')
+			major = int(parts[0])
+			minor = int(parts[1]) if len(parts) > 1 else 0
+		# Safe navigation (?=) syntax was introduced in Stellaris 4.4
+		USE_SAFE_NAVIGATION = (major, minor) >= (4, 4)
+	except (ValueError, IndexError, TypeError):
+		pass  # unparseable version — keep current defaults
 
 NON_ANY_TRIGGERS = { # STEADY UPDATE: unfortunataly unharmonized triggers
 	"count_deposits",
@@ -82,6 +117,12 @@ EXPLICIT_LOGIC_KEYS.add('calc_true_if')
 KEYWORDS_TO_UPPER.add('AND')
 # Scopes that cannot have negations pushed into them
 NON_NEGATABLE_SCOPES = ( 'if', 'else_if', 'else', 'while', 'switch', 'inverted_switch', 'calc_true_if' ) # , 'trigger', 'limit'
+# Scopes where only trigger conditions are evaluated (IF effects are NOT valid here)
+TRIGGER_CONTEXT_SCOPES = {
+	'limit', 'potential', 'allow', 'trigger', 'destroy_trigger',
+	'NOR', 'NAND', 'NOT', 'OR', 'AND',
+	'modifier', 'ai_weight', 'weight_modifier', 'calc_true_if',
+}
 # NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
 
 # SAFE_MERGE_PARENTS = {
@@ -325,7 +366,9 @@ def parse(tokens, text):
 
 		if token_val == "}":
 			if not stack:
-				raise ValueError(f"Unbalanced braces: Extra '}}' at line {token_line}")
+				# Auto-recover: skip the extra closing brace and continue
+				print(f"[Logic Optimizer] Warning: Extra '}}' at line {token_line} — skipping", file=sys.stderr)
+				i += 1; continue
 			finished_list = current_list
 			current_list = stack.pop()
 			if current_list and current_list[-1].get('val') == 'PENDING_BLOCK':
@@ -470,23 +513,81 @@ def parse(tokens, text):
 		i += 1
 
 	if stack:
-		raise ValueError("Unbalanced braces: Missing '}' at the end of the file.")
+		# Auto-recover: synthesize missing closing braces for each remaining level
+		missing_count = len(stack)
+		print(f"[Logic Optimizer] Warning: Missing {missing_count} closing '}}' brace(s) at end of file — auto-closing", file=sys.stderr)
+		while stack:
+			finished_list = current_list
+			current_list = stack.pop()
+			if current_list and current_list[-1].get('val') == 'PENDING_BLOCK':
+				parent_node = current_list[-1]
+				parent_node['val'] = finished_list
+				# Capture raw text for switch nodes (estimate using end of text)
+				if parent_node.get('key') in HYBRID_RAW_BLOCKS and '_token_start' in parent_node:
+					parent_node['_raw'] = text[parent_node['_token_start']:len(text)]
 
 	return current_list
 
-# --- 3. Nodes Equal ---
+# --- 3. Node Fingerprint & Equality ---
+def _node_fingerprint(node):
+	"""
+	Compute a hashable fingerprint tuple for fast equality pre-checks.
+	Result is cached on the node as _fp for subsequent calls.
+	"""
+	if '_fp' in node:
+		return node['_fp']
+
+	t = node.get('type')
+	if t == 'comment':
+		fp = (t, node.get('val', ''))
+	elif t == 'raw_block':
+		fp = (t, node.get('key', ''), node.get('val', ''))
+	elif t == 'node':
+		val = node.get('val')
+		if isinstance(val, list):
+			child_fps = tuple(_node_fingerprint(c) for c in val if c.get('type') == 'node')
+			fp = (t, node.get('key', ''), node.get('op', ''), node.get('val_key', ''), child_fps)
+		else:
+			fp = (t, node.get('key', ''), node.get('op', ''), str(val))
+	else:
+		fp = (t,)
+	node['_fp'] = fp
+	return fp
+
+def _clear_fingerprints(node_list):
+	"""Recursively clear cached fingerprints from a node tree (call between optimization passes)."""
+	for node in node_list:
+		node.pop('_fp', None)
+		if node.get('type') == 'node' and isinstance(node.get('val'), list):
+			_clear_fingerprints(node['val'])
+
 def nodes_are_equal(n1, n2):
-	if n1['type'] != n2['type']: return False
-	if n1['type'] == 'comment': return n1['val'] == n2['val']
-	if n1.get('key') != n2.get('key'): return False
-	if n1.get('op') != n2.get('op'): return False
+	"""Check structural equality. Uses fingerprint fast-path, falls back to deep comparison."""
+	if n1 is n2:
+		return True
+	if n1['type'] != n2['type']:
+		return False
+	if n1['type'] == 'comment':
+		return n1['val'] == n2['val']
+	if n1.get('key') != n2.get('key'):
+		return False
+	if n1.get('op') != n2.get('op'):
+		return False
 	v1, v2 = n1.get('val'), n2.get('val')
 	if isinstance(v1, list) and isinstance(v2, list):
+		# Fast-path: compare fingerprints first
+		fp1 = _node_fingerprint(n1)
+		fp2 = _node_fingerprint(n2)
+		if fp1 != fp2:
+			return False
+		# Fingerprints match — still need structural verification
 		c1 = [x for x in v1 if x['type'] == 'node']
 		c2 = [x for x in v2 if x['type'] == 'node']
-		if len(c1) != len(c2): return False
+		if len(c1) != len(c2):
+			return False
 		for i in range(len(c1)):
-			if not nodes_are_equal(c1[i], c2[i]): return False
+			if not nodes_are_equal(c1[i], c2[i]):
+				return False
 		return True
 	return v1 == v2
 
@@ -496,22 +597,46 @@ def _extract_common_and_children(and_children_nodes):
 	if not and_children_nodes:
 		return common_nodes, []
 
-	first_and_block_nodes = [n for n in and_children_nodes[0]['val'] if n['type'] == 'node']
+	# Collect node-lists per child block and their fingerprint sets
+	per_block_nodes = []
+	per_block_fp_sets = []
+	for child_block in and_children_nodes:
+		nodes = [n for n in child_block['val'] if n['type'] == 'node']
+		per_block_nodes.append(nodes)
+		per_block_fp_sets.append({_node_fingerprint(n): n for n in nodes})
 
-	for candidate in first_and_block_nodes:
-		is_everywhere = True
-		for other_child in and_children_nodes[1:]:
-			other_contents = [n for n in other_child['val'] if n['type'] == 'node']
-			if not any(nodes_are_equal(candidate, other_node) for other_node in other_contents):
-				is_everywhere = False
+	# Find fingerprints present in EVERY block (intersection)
+	if not per_block_fp_sets:
+		return common_nodes, []
+
+	common_fps = per_block_fp_sets[0].keys()
+	for fp_set in per_block_fp_sets[1:]:
+		common_fps = common_fps & fp_set.keys()
+		if not common_fps:
+			break
+
+	# Verify candidates via full equality check and collect
+	for fp in common_fps:
+		candidate = per_block_fp_sets[0][fp]
+		# Verify candidate is indeed present in all other blocks (guard against hash collision)
+		verified = True
+		for fp_set in per_block_fp_sets[1:]:
+			other_node = fp_set.get(fp)
+			if other_node is None or not nodes_are_equal(candidate, other_node):
+				verified = False
 				break
-		if is_everywhere:
+		if verified:
 			common_nodes.append(candidate)
 
-	# Remove common nodes from children
-	modified_and_children = copy.deepcopy(and_children_nodes)
-	for child in modified_and_children:
-		child['val'] = [c for c in child['val'] if c['type'] == 'comment' or not any(nodes_are_equal(c, common) for common in common_nodes)]
+	# Remove common nodes from children (shallow rebuild instead of deepcopy)
+	common_fp_set = {_node_fingerprint(n) for n in common_nodes}
+	modified_and_children = []
+	for child_block in and_children_nodes:
+		new_val = [c for c in child_block['val']
+				   if c['type'] == 'comment'
+				   or _node_fingerprint(c) not in common_fp_set
+				   or not any(nodes_are_equal(c, common) for common in common_nodes)]
+		modified_and_children.append(dict(child_block, val=new_val))
 
 	return common_nodes, modified_and_children
 
@@ -912,9 +1037,9 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 
 				is_candidate_node = _is_negation_node(node)
 				if is_candidate_node and node.get('key') == 'NOT':
-					 child_val = node.get('val')
-					 if (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
-						 is_candidate_node = False
+					child_val = node.get('val')
+					if (isinstance(child_val, list) and len(child_val) == 1 and child_val[0].get('key') in ('OR', 'AND')):
+						is_candidate_node = False
 
 				if not is_candidate_node:
 					new_list.append(node)
@@ -1007,38 +1132,45 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 		node_list = new_list
 
 	# --- SAFE NAVIGATION (?=) OPTIMIZATION ---
-	if USE_SAFE_NAVIGATION and parent_key != 'NAND':
+	if USE_SAFE_NAVIGATION and parent_key != 'calc_true_if':
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
 			if node['type'] == 'node' and node.get('key') == 'exists' and node.get('op') == '=':
 				scope_name = str(node.get('val', ''))
 				if scope_name:
-					# Look for a sibling with key == scope_name
+					# Only replace a *directly adjacent* 'exists = x' + 'x = { ... }' pair
+					# (comment nodes in between are fine). If other nodes sit in between, the
+					# 'exists' check also guards those nodes and must be preserved.
 					sibling_idx = -1
-					for j in range(len(node_list)):
-						if j != i and node_list[j]['type'] == 'node' and str(node_list[j].get('key', '')) == scope_name:
+					j = i + 1
+					while j < len(node_list):
+						cand = node_list[j]
+						if cand['type'] == 'comment':
+							j += 1
+							continue
+						if cand['type'] == 'node' and str(cand.get('key', '')) == scope_name and isinstance(cand.get('val'), list):
 							sibling_idx = j
-							break
-					
+						break
+
 					if sibling_idx != -1:
 						sibling = node_list[sibling_idx]
 						# Found a match!
 						sibling['key'] = scope_name + '?'
-						
+
 						# Move comments from exists node to sibling if possible
 						# Note: keeping it simple. If exists had an inline comment, prepend it to sibling's inline.
 						cm_inline = node.get('_cm_inline')
 						if cm_inline:
 							sibling['_cm_inline'] = cm_inline + sibling.get('_cm_inline', '')
-						
+
 						# Remove the exists node
 						node_list.pop(i)
 						changed_any = True
 						print(f"Applied safe navigation: {scope_name}?", file=sys.stderr)
 						# i does not increment since we removed an item at i.
 						# However, if sibling_idx < i, removing i doesn't shift sibling.
-						# Wait, if we pop(i), the next element becomes i. 
+						# Wait, if we pop(i), the next element becomes i.
 						# We should just 'continue' so we check the new element at i.
 						continue
 			elif node['type'] == 'node' and node.get('key') == 'if' and node.get('op') == '=':
@@ -1052,19 +1184,21 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 							limit_node = child
 							limit_idx = idx
 							break
-					
+
 					if limit_node:
 						# Find all exists checks in the limit block
-						exists_nodes = []
+						exists_node = []
 						for idx, child in enumerate(limit_node['val']):
-							if child['type'] == 'node' and child.get('key') == 'exists' and child.get('op') == '=':
-								target_name = str(child.get('val', ''))
-								if target_name:
-									exists_nodes.append((child, idx, target_name))
-						
+							if child['type'] == 'node':
+								if child.get('key') == 'exists' and child.get('op') == '=':
+									target_name = str(child.get('val', ''))
+									if target_name:
+										exists_node = [(child, idx, target_name)]
+								break # Only 1 child
+
 						# For each exists check, look for a sibling outside limit in if_children
 						optimized_any_for_this_if = False
-						for exists_node, exists_idx, target_name in exists_nodes:
+						for exists_node, exists_idx, target_name in exists_node:
 							sibling_node = None
 							sibling_idx = -1
 							for idx, child in enumerate(if_children):
@@ -1072,7 +1206,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 									sibling_node = child
 									sibling_idx = idx
 									break
-							
+
 							if sibling_node:
 								# Found a match!
 								# Determine if we can do full collapse or partial simplification
@@ -1084,17 +1218,27 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 									c for idx, c in enumerate(if_children)
 									if c['type'] == 'node' and idx != limit_idx and idx != sibling_idx
 								]
-								
-								if not other_if_actions:
-									if not other_limit_conditions:
+
+								if not other_if_actions and not other_limit_conditions:
+									# Check for ELSE/ELSE_IF following this IF in the parent list
+									has_else_following = False
+									for next_idx in range(i + 1, len(node_list)):
+										next_node = node_list[next_idx]
+										if next_node['type'] == 'comment':
+											continue
+										if next_node.get('key') in ('else', 'else_if'):
+											has_else_following = True
+										break
+
+									if not has_else_following:
 										# Case A: Complete collapse
 										sibling_node['key'] = target_name + '?'
-										
+
 										# Prepend comments from exists node to sibling if possible
 										cm_inline = exists_node.get('_cm_inline')
 										if cm_inline:
 											sibling_node['_cm_inline'] = cm_inline + sibling_node.get('_cm_inline', '')
-										
+
 										# Collect comments from limit node and if children
 										comments_to_keep = []
 										for c in limit_node['val']:
@@ -1103,37 +1247,82 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 										for c in if_children:
 											if c['type'] == 'comment':
 												comments_to_keep.append(c)
-										
+
 										nodes_to_insert = comments_to_keep + [sibling_node]
 										node_list[i:i+1] = nodes_to_insert
 										changed_any = True
 										optimized_any_for_this_if = True
 										print(f"Collapsed if-exists check for target: {target_name}?", file=sys.stderr)
-										break # break exists_nodes loop since we replaced the whole 'if' node
-									else:
-										# Case B: Partial simplification
-										sibling_node['key'] = target_name + '?'
-										
-										# Prepend comments from exists node to sibling if possible
-										cm_inline = exists_node.get('_cm_inline')
-										if cm_inline:
-											sibling_node['_cm_inline'] = cm_inline + sibling_node.get('_cm_inline', '')
-										
-										# Remove the exists node from limit
-										limit_node['val'].pop(exists_idx)
-										
-										# Check if limit has only comments now
-										if not any(c['type'] == 'node' for c in limit_node['val']):
-											# Remove the limit node from if_children
-											if_children.pop(limit_idx)
-										
-										changed_any = True
-										optimized_any_for_this_if = True
-										print(f"Applied safe navigation to sibling in if: {target_name}?", file=sys.stderr)
-										break # break because we modified the lists we are iterating
-						
+										break # break exists_node loop since we replaced the whole 'if' node
+									# else: # DEBUG # Cannot collapse — ELSE/ELSE_IF would break
+									# 	print(f"Skipped if-exists collapse for {target_name}: ELSE/ELSE_IF follows", file=sys.stderr)
+
 						if optimized_any_for_this_if:
 							continue
+			i += 1
+
+	# --- SAFE NAVIGATION REVERT (? -> exists) ---
+	elif not USE_SAFE_NAVIGATION:
+		i = 0
+		while i < len(node_list):
+			node = node_list[i]
+			node_key = str(node.get('key', ''))
+			if node['type'] == 'node' and node_key.endswith('?') and isinstance(node.get('val'), list):
+				target_name = node_key[:-1]
+				if not target_name:
+					i += 1; continue
+
+				# Determine if parent context supports IF blocks (non-trigger scope)
+				is_trigger_context = bool(parent_key) and (
+					parent_key in TRIGGER_CONTEXT_SCOPES
+					or re.match(r'^(any_|count_)', str(parent_key)) is not None
+				)
+				exists_node = {'key': 'exists', 'op': '=', 'val': target_name, 'type': 'node'}
+				scope_node = {k: v for k, v in node.items() if k not in ('_fp',)}
+				# The parser stores leading comments twice (standalone comment nodes AND
+				# '_cm_preceding' on the next node). Splitting one node into two would carry
+				# that copy along and re-materialize it later -> duplicated comment.
+				cm_preceding = node.get('_cm_preceding')
+				if cm_preceding:
+					j = i - 1
+					found = 0
+					while j >= 0 and node_list[j].get('type') == 'comment':
+						j -= 1
+						found += 1
+					if found >= len(cm_preceding):
+						scope_node.pop('_cm_preceding', None)
+				scope_node['key'] = target_name
+
+				if is_trigger_context:
+					# Trigger context: simple exists + scope form
+					# Preserve inline comment on the scope node
+					cm_inline = node.pop('_cm_inline', None)
+					if cm_inline:
+						scope_node['_cm_inline'] = cm_inline
+
+					if parent_key in ('OR', 'NOR', 'NOT', 'calc_true_if'):
+						and_node = {'key': 'AND', 'op': '=', 'val': [exists_node, scope_node], 'type': 'node'}
+						node_list[i:i+1] = [and_node]
+					else:
+						node_list[i:i+1] = [exists_node, scope_node]
+
+					changed_any = True
+					print(f"Reverted safe navigation (trigger): {target_name}", file=sys.stderr)
+				else:
+					# Non-trigger context: wrap in IF block
+					limit_node = {'key': 'limit', 'op': '=', 'val': [exists_node], 'type': 'node'}
+					# Preserve inline comment from original node on the scope node
+					cm_inline = scope_node.pop('_cm_inline', None)
+					if cm_inline:
+						limit_node['_cm_inline'] = cm_inline
+
+					if_node = {'key': 'if', 'op': '=', 'val': [limit_node, scope_node], 'type': 'node'}
+
+					node_list[i:i+1] = [if_node]
+
+					changed_any = True
+					print(f"Reverted safe navigation (effect): {target_name} -> IF block", file=sys.stderr)
+				continue
 			i += 1
 
 	new_list = []
@@ -1389,6 +1578,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 			if key == 'AND':
 				unique_nodes = []
 				new_children_list = []
+				seen_fps = set()  # fingerprint-based fast dedup
 				original_children_count = len(node['val'])
 
 				for child in node['val']:
@@ -1396,11 +1586,16 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 						new_children_list.append(child)
 						continue
 
+					fp = _node_fingerprint(child)
+					if fp in seen_fps:
+						continue
+					# Verify no collision: check against existing unique nodes
 					is_duplicate = any(nodes_are_equal(child, unique_node) for unique_node in unique_nodes)
 
 					if not is_duplicate:
 						new_children_list.append(child)
 						unique_nodes.append(child)
+						seen_fps.add(fp)
 
 				if len(new_children_list) < original_children_count:
 					node['val'] = new_children_list
@@ -2040,7 +2235,8 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 						made_change_ab_not_b = True
 						print("Simplified OR structure based on (A and B) or !B -> !B or A", file=sys.stderr)
 
-						A_content = [c for c in and_block_to_process['val'] if not nodes_are_equal(c, and_child_to_remove)]
+						remove_fp = _node_fingerprint(and_child_to_remove)
+						A_content = [c for c in and_block_to_process['val'] if _node_fingerprint(c) != remove_fp or not nodes_are_equal(c, and_child_to_remove)]
 						A_nodes = [c for c in A_content if c['type'] == 'node']
 						not_B_node = other_node_to_process
 
@@ -2242,10 +2438,10 @@ def should_be_compact(node):
 	# Usually simple data lists, should be compact
 	if node.get('op') == '=':
 		val_key = node.get('val_key','')
-		# if val_key: print(f"val_key {val_key}") # DEBUG
 		if val_key and val_key in force_compact_keys:
 			# print(f"compact key {val_key}") # DEBUG
 			return True
+
 	logic_children = [c for c in children if c['type'] == 'node']
 	children_len = len(logic_children)
 	if children_len > 1 and key in normal_nodes: return False
@@ -2329,10 +2525,13 @@ def node_to_string(node, depth=0, be_compact=False):
 		cm_open = node.get('_cm_open', "")
 		cm_close = node.get('_cm_close', "")
 		is_compactable = False
+		val_key = node.get('val_key','')
 
 		# --- Compacting Logic (Based on Heuristic and Depth) ---
 		# 1. Determine Compacting Rule based on Key and Depth
-		if (
+		if node.get('op') == '=' and val_key and val_key in force_compact_keys:
+			is_compactable = True
+		elif (
 			not NO_COMPACT and
 			not be_compact and
 			depth and
@@ -2365,11 +2564,11 @@ def node_to_string(node, depth=0, be_compact=False):
 					child_strs.append(s)
 			if is_compactable:
 				joined_children = " ".join(child_strs)
-				val_key_str = f"{node.get('val_key')} " if node.get('val_key') else ""
+				val_key_str = f"{val_key} " if val_key else ""
 				return f"{indent}{key} {op} {val_key_str}{{ {joined_children} }}{cm_close}"
 
 		# Not compact
-		val_key_str = f"{node.get('val_key')} " if node.get('val_key') else ""
+		val_key_str = f"{val_key} " if val_key else ""
 		lines = [f"{indent}{key} {op} {val_key_str}{{{cm_open}"]
 		prev_was_header = False
 		prev_was_comment = False
@@ -2540,8 +2739,12 @@ def process_text(content):
 		# Loop for stability (max 3 passes)
 		passes = 0
 		while logic_changed and passes < 3:
+			_clear_fingerprints(optimized_tree)
 			optimized_tree, logic_changed = optimize_node_list(optimized_tree)
 			passes += 1
+
+		# Clean up cached fingerprints before generating output
+		_clear_fingerprints(optimized_tree)
 
 		# Always re-generate the string to apply formatting changes.
 		new_content = block_to_string(optimized_tree)
