@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -1170,15 +1170,35 @@ def optimize_node_list(node_list, parent_key=None, level=0, in_trigger_context=F
 				# (comment nodes in between are fine). If other nodes sit in between, the
 				# guard also covers those nodes and must be preserved.
 				sibling_idx = -1
+				redundant_idx = -1
+				redundant_key = ''
 				j = i + 1
 				while j < len(node_list):
 					cand = node_list[j]
 					if cand['type'] == 'comment':
 						j += 1
 						continue
-					if cand['type'] == 'node' and str(cand.get('key', '')) in guard_scopes and isinstance(cand.get('val'), list):
-						sibling_idx = j
+					if cand['type'] == 'node' and isinstance(cand.get('val'), list):
+						cand_key = str(cand.get('key', ''))
+						if cand_key in guard_scopes:
+							sibling_idx = j
+						elif cand_key.endswith('?') and cand_key[:-1] in guard_scopes:
+							# The block already is safe navigation: it carries the existence check
+							# itself, so the guard in front of it is redundant
+							# ('exists = x' AND 'x? = { ... }' is just 'x? = { ... }').
+							redundant_idx = j
+							redundant_key = cand_key
 					break
+
+				if redundant_idx != -1:
+					cm_inline = node.get('_cm_inline')
+					if cm_inline:
+						sib = node_list[redundant_idx]
+						sib['_cm_inline'] = cm_inline + sib.get('_cm_inline', '')
+					node_list.pop(i)
+					changed_any = True
+					print(f"Removed redundant guard before safe navigation: {redundant_key}", file=sys.stderr)
+					continue
 
 				if sibling_idx != -1:
 					sibling = node_list[sibling_idx]
@@ -1335,7 +1355,19 @@ def optimize_node_list(node_list, parent_key=None, level=0, in_trigger_context=F
 						and_node = {'key': 'AND', 'op': '=', 'val': [exists_node, scope_node], 'type': 'node'}
 						node_list[i:i+1] = [and_node]
 					else:
-						node_list[i:i+1] = [exists_node, scope_node]
+						# In a conjunctive list an identical guard directly in front already covers
+						# this node - do not write 'exists = x' twice.
+						prev_idx = i - 1
+						while prev_idx >= 0 and node_list[prev_idx].get('type') == 'comment':
+							prev_idx -= 1
+						prev_is_same_guard = (prev_idx >= 0
+							and node_list[prev_idx].get('type') == 'node'
+							and node_list[prev_idx].get('key') == 'exists'
+							and str(node_list[prev_idx].get('val', '')) == target_name)
+						if prev_is_same_guard:
+							node_list[i:i+1] = [scope_node]
+						else:
+							node_list[i:i+1] = [exists_node, scope_node]
 
 					changed_any = True
 					print(f"Reverted safe navigation (trigger): {target_name}", file=sys.stderr)
