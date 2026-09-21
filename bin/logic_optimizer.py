@@ -1142,11 +1142,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, in_trigger_context=F
 		node_list = new_list
 
 	# --- SAFE NAVIGATION (?=) OPTIMIZATION ---
-	# Only collapse guard + scope pairs that are logically ANDed: an implicit AND list or
-	# an AND block. Inside OR/NOR/NOT/NAND (and the temporary OR wrapper built while
-	# merging NOR blocks) the two nodes are ORed, so folding them into 'scope?' would
-	# turn 'exists OR scope' into 'exists AND scope'. 'calc_true_if' counts entries.
-	if USE_SAFE_NAVIGATION and parent_key not in ('OR', 'NOR', 'NOT', 'NAND', 'calc_true_if'):
+	# Only collapse guard + scope pairs that are logically ANDed: an implicit AND list, an
+	# AND block or a NAND block (its children are ANDed too). Inside OR/NOR/NOT - and the
+	# temporary OR wrapper built while merging NOR blocks - the two nodes are ORed, so
+	# folding them into 'scope?' would turn 'exists OR scope' into 'exists AND scope'.
+	# 'calc_true_if' counts its entries.
+	if USE_SAFE_NAVIGATION and parent_key not in ('OR', 'NOR', 'NOT', 'calc_true_if'):
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
