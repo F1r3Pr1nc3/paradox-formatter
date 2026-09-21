@@ -251,7 +251,7 @@ def _negate_numerical_comparison_recursively(node, dry_run=False):
 		# --- RECURSIVE STEP ---
 		# This is a "deep" search down a chain of single-child nodes.
 		# Recurse only if there's a single child and the current node is just a wrapper.
-		if len(children) == 1 and not key.startswith(('any_', 'count_')) and key not in NON_NEGATABLE_SCOPES:
+		if len(children) == 1 and not key.startswith(('any_', 'count_')) and key not in NON_NEGATABLE_SCOPES and not _is_safe_nav_key(key):
 			return _negate_numerical_comparison_recursively(children[0], dry_run)
 
 	return False
@@ -758,6 +758,12 @@ def _is_negation(n1, n2):
 		return False
 	return _is_negation_recursive(n1, n2)
 
+def _is_safe_nav_key(key):
+	# 'scope? = { ... }' means 'exists = scope AND scope = { ... }': the existence
+	# guard is part of the expression, so a negation must never be pushed into
+	# (or through) such a node.
+	return str(key).endswith('?')
+
 def _is_negation_node(node):
 	if node['type'] != 'node':
 		return False
@@ -783,7 +789,7 @@ def _is_negation_node(node):
 		if len(children_nodes) == 1:
 			child = children_nodes[0]
 			child_key = child.get('key')
-			if not child_key in NON_NEGATABLE_SCOPES and not child_key.startswith('any_'):
+			if not child_key in NON_NEGATABLE_SCOPES and not child_key.startswith('any_') and not _is_safe_nav_key(child_key):
 				return _is_negation_node(child)
 	return False
 
@@ -838,7 +844,7 @@ def _has_text(node):
 				return True
 	return False
 
-def optimize_node_list(node_list, parent_key=None, level=0):
+def optimize_node_list(node_list, parent_key=None, level=0, in_trigger_context=False):
 	changed_any = False
 	# New logic for NOT/comparison/NOR merge
 	i = 0
@@ -1136,7 +1142,11 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 		node_list = new_list
 
 	# --- SAFE NAVIGATION (?=) OPTIMIZATION ---
-	if USE_SAFE_NAVIGATION and parent_key != 'calc_true_if':
+	# Only collapse guard + scope pairs that are logically ANDed: an implicit AND list or
+	# an AND block. Inside OR/NOR/NOT/NAND (and the temporary OR wrapper built while
+	# merging NOR blocks) the two nodes are ORed, so folding them into 'scope?' would
+	# turn 'exists OR scope' into 'exists AND scope'. 'calc_true_if' counts entries.
+	if USE_SAFE_NAVIGATION and parent_key not in ('OR', 'NOR', 'NOT', 'NAND', 'calc_true_if'):
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
@@ -1188,6 +1198,12 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 					# The next element now sits at i, so re-check it.
 					continue
 			elif node['type'] == 'node' and node.get('key') == 'if' and node.get('op') == '=':
+				if in_trigger_context:
+					# 'if = { limit = L body }' is an *implication* (L -> body) when used as a
+					# trigger, which 'scope? = { body }' (exists AND body) does not express.
+					# Never fold trigger-side ifs; leave them for the OR form instead.
+					i += 1
+					continue
 				if_children = node.get('val')
 				if isinstance(if_children, list):
 					# Find the limit block
@@ -1370,7 +1386,10 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 				child_changed = False
 				continue
 			else:
-				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1)
+				child_trigger_context = (in_trigger_context
+						or key in TRIGGER_CONTEXT_SCOPES
+						or re.match(r'^(any_|count_)', str(key)) is not None)
+				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, in_trigger_context=child_trigger_context)
 			if child_changed:
 				node['val'] = optimized_children; changed_any = True
 
@@ -2002,7 +2021,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 								grandchild = grandchildren[0]
 								child_key = child.get('key', '')
 								# NOT = { scope = { OR = ... } } -> scope = { NOR = ... }
-								if grandchild.get('key') == 'OR' and isinstance(grandchild.get('val'), list) and not child_key.startswith('any_') and not child_key.startswith('count_') and child_key not in NON_NEGATABLE_SCOPES:
+								if grandchild.get('key') == 'OR' and isinstance(grandchild.get('val'), list) and not child_key.startswith('any_') and not child_key.startswith('count_') and child_key not in NON_NEGATABLE_SCOPES and not _is_safe_nav_key(child_key):
 									grandchild['key'] = 'NOR'
 									# Hoist child up to replace the NOT node
 									node['key'] = child['key']
@@ -2015,7 +2034,7 @@ def optimize_node_list(node_list, parent_key=None, level=0):
 									elif '_cm_close' in node: del node['_cm_close']
 									changed_any = True
 									print("Created NOR from NOT-scope-OR", file=sys.stderr)
-								elif grandchild.get('val') == 'yes' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(('any_', 'count_')):
+								elif grandchild.get('val') == 'yes' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(('any_', 'count_')) and not _is_safe_nav_key(child_key):
 									grandchild['val'] = 'no'
 
 									# Hoist child up to replace the NOT node
