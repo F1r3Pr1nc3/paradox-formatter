@@ -1,7 +1,7 @@
 {
     "name": "paradox-script-formatter",
     "displayName": "PDX Script Formatter",
-    "description": "A robust, whitespace-aware formatter for Paradox Interactive game scripts. Features logical simplifications (De Morgan's laws), syntax standardization, and consistent indentation.",
+    "description": "A robust, whitespace-aware formatter for Paradox Interactive game scripts. Features logical simplifications (De Morgan's laws), syntax standardization, consistent indentation and optional Stellaris v4.4+ Safe Navigation support (scope? = { ... }).",
     "private": true,
     "icon": "icon.png",
     "publisher": "f1r3pr1nc3",
@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.5.6",
+    "version": "0.5.7",
     "preview": true,
     "repository": {
         "type": "git",

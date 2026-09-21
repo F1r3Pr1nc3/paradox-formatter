@@ -127,6 +127,15 @@ TRIGGER_CONTEXT_SCOPES = {
 # following owner-like scope block. Every entry must be a scope link that exists
 # whenever 'has_owner = yes' holds on the same scope (see safe navigation section).
 HAS_OWNER_SCOPE_GUARDS = ('owner', 'space_owner')
+# Containers that hold effects only: inside them 'if = { limit = L body }' can be folded
+# into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
+# same conditional means 'L implies body' and has to become an OR instead.
+EFFECT_CONTEXT_SCOPES = {
+	'immediate', 'option', 'after', 'effect', 'hidden_effect', 'tooltip',
+	'success', 'fail', 'abort', 'while', 'random_list', 'random',
+}
+TRIGGER_QUANTIFIER_RE = re.compile(r'^(any_|count_)')
+EFFECT_QUANTIFIER_RE = re.compile(r'^(every_|ordered_)')
 # NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
 
 # SAFE_MERGE_PARENTS = {
@@ -769,6 +778,10 @@ def _is_negation_node(node):
 		return False
 	is_block = isinstance(node.get('val'), list)
 	key = node.get('key')
+	if _is_safe_nav_key(key):
+		# 'scope? = { ... }' means 'exists AND ...', so negating it is not just flipping
+		# the inner value - it must never take part in negation merging (NOR/NAND).
+		return False
 	if key in NEGATION_LOGIC_KEYS and is_block:
 		return True
 
@@ -844,7 +857,64 @@ def _has_text(node):
 				return True
 	return False
 
-def optimize_node_list(node_list, parent_key=None, level=0, in_trigger_context=False):
+def _scope_context_for_key(key, inherited):
+	"""Context of a key's children: 'trigger', 'effect' or the inherited value."""
+	key_str = str(key)
+	key_low = key_str.lower()
+	if key_str in TRIGGER_CONTEXT_SCOPES or TRIGGER_QUANTIFIER_RE.match(key_str) or key_low.endswith('_trigger'):
+		return 'trigger'
+	if key_str in EFFECT_CONTEXT_SCOPES or EFFECT_QUANTIFIER_RE.match(key_str) or key_low.endswith('_effect'):
+		return 'effect'
+	return inherited
+
+
+def _has_following_else(node_list, idx):
+	for nxt in node_list[idx + 1:]:
+		if nxt.get('type') == 'comment':
+			continue
+		return str(nxt.get('key', '')) in ('else', 'else_if')
+	return False
+
+
+def _if_implication_node(if_node):
+	"""Rewrite a trigger conditional 'if = { limit = L body }' as 'OR = { !L body }'.
+	Returns None if it cannot be expressed as an OR (comments, empty limit or body)."""
+	children = if_node.get('val')
+	if not isinstance(children, list):
+		return None
+	limit_node = None
+	body_nodes = []
+	for child in children:
+		if child.get('type') != 'node':
+			return None
+		if child.get('key') == 'limit' and isinstance(child.get('val'), list):
+			limit_node = child
+		else:
+			body_nodes.append(child)
+	if limit_node is None or not body_nodes:
+		return None
+	limit_nodes = []
+	for child in limit_node.get('val', []):
+		if child.get('type') != 'node':
+			return None
+		limit_nodes.append(child)
+	if not limit_nodes:
+		return None
+	if len(limit_nodes) == 1:
+		neg_limit = {'key': 'NOT', 'op': '=', 'val': [limit_nodes[0]], 'type': 'node'}
+	else:
+		neg_limit = {'key': 'NAND', 'op': '=', 'val': limit_nodes, 'type': 'node'}
+	if len(body_nodes) == 1:
+		body = body_nodes[0]
+	else:
+		body = {'key': 'AND', 'op': '=', 'val': body_nodes, 'type': 'node'}
+	or_node = {'key': 'OR', 'op': '=', 'val': [neg_limit, body], 'type': 'node'}
+	for meta in ('_cm_inline', '_cm_open', '_cm_close'):
+		if meta in if_node:
+			or_node[meta] = if_node[meta]
+	return or_node
+
+def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 	changed_any = False
 	# New logic for NOT/comparison/NOR merge
 	i = 0
@@ -1219,10 +1289,18 @@ def optimize_node_list(node_list, parent_key=None, level=0, in_trigger_context=F
 					# The next element now sits at i, so re-check it.
 					continue
 			elif node['type'] == 'node' and node.get('key') == 'if' and node.get('op') == '=':
-				if in_trigger_context:
-					# 'if = { limit = L body }' is an *implication* (L -> body) when used as a
-					# trigger, which 'scope? = { body }' (exists AND body) does not express.
-					# Never fold trigger-side ifs; leave them for the OR form instead.
+				if scope_context != 'effect':
+					# In trigger scope 'if = { limit = L body }' means 'L implies body', which
+					# 'scope? = { body }' (exists AND body) does not express - rewrite it as an OR.
+					# In an unknown scope (custom keys, file roots) we cannot tell trigger from
+					# effect, so leave the conditional alone instead of making it invalid.
+					if scope_context == 'trigger' and not _has_following_else(node_list, i):
+						or_node = _if_implication_node(node)
+						if or_node is not None:
+							node_list[i:i+1] = [or_node]
+							changed_any = True
+							print("Rewrote trigger if into OR implication", file=sys.stderr)
+							continue
 					i += 1
 					continue
 				if_children = node.get('val')
@@ -1419,10 +1497,8 @@ def optimize_node_list(node_list, parent_key=None, level=0, in_trigger_context=F
 				child_changed = False
 				continue
 			else:
-				child_trigger_context = (in_trigger_context
-						or key in TRIGGER_CONTEXT_SCOPES
-						or re.match(r'^(any_|count_)', str(key)) is not None)
-				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, in_trigger_context=child_trigger_context)
+				child_context = _scope_context_for_key(key, scope_context)
+				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context)
 			if child_changed:
 				node['val'] = optimized_children; changed_any = True
 

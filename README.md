@@ -1,11 +1,11 @@
 # Paradox Script Formatter for VS Code
 
-![Version](https://img.shields.io/badge/version-0.5.6-blue.svg)
+![Version](https://img.shields.io/badge/version-0.5.7-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 A robust, whitespace-aware formatter for Paradox Interactive game scripts (Stellaris, HOI4, EU4, CK3).
 
-This extension provides **smart indentation**, **block expansion**, and **syntax protection**, ensuring your code looks clean without breaking game logic or deleting comments.
+This extension provides **smart indentation**, **block expansion**, and **syntax protection**, ensuring your code looks clean without breaking game logic or deleting comments. It also supports the Stellaris **v4.4+ Safe Navigation** syntax (`scope? = { ... }`): an optional pass that folds `exists = xyz` + `xyz = { ... }` (and `has_owner = yes` + `owner`/`space_owner = { ... }`) into `xyz? = { ... }` for 4.4+ targets, and reverts it for older versions.
 
 ---
 
@@ -98,8 +98,8 @@ limit = {
 ### 5. Format All Files
 You can trigger a bulk formatting operation across all open files or the entire workspace using the `PDX Formatter: Format all files` command.
 
-### 6. Safe Navigation Support
-Enable or disable safe navigation logic (default: false). When enabled, the formatter converts `exists = xyz` **immediately** followed by `xyz = ...` (only comment lines may sit in between) into the safe navigation syntax `xyz? = ...` (Stellaris v4.4+). If other conditions sit between the two nodes, the `exists = xyz` check also guards them, so it is preserved. The scope-less guard `has_owner = yes` is folded the same way, but only into a directly following `owner` or `space_owner` block, and only in conjunctive lists (never inside `OR`/`NOR`/`NOT`/`calc_true_if`).
+### 6. Safe Navigation Support (Stellaris v4.4+)
+Enable or disable safe navigation logic (default: false). When enabled, the formatter converts `exists = xyz` **immediately** followed by `xyz = ...` (only comment lines may sit in between) into the safe navigation syntax `xyz? = ...` (Stellaris v4.4+). If other conditions sit between the two nodes, the `exists = xyz` check also guards them, so it is preserved. The scope-less guard `has_owner = yes` is folded the same way, but only into a directly following `owner` or `space_owner` block, and only in conjunctive lists (never inside `OR`/`NOR`/`NOT`/`calc_true_if`). A redundant `exists = xyz` directly in front of an existing `xyz? = { ... }` is removed, and a `xyz?` node is never negated (it means `exists AND ...`, so flipping only its inner value would change the logic). Trigger-side conditionals are handled separately: `if = { limit = L body }` means `L implies body` there, so it is rewritten into the equivalent `OR = { !L body }` instead of `xyz? = { body }`; in unknown scopes (custom keys, file roots) such conditionals are left untouched.
 
 -----
 
@@ -109,17 +109,17 @@ Enable or disable safe navigation logic (default: false). When enabled, the form
 
 You can install the packaged extension directly using the `.vsix` file.
 
-1.  **Download** the `paradox-script-formatter-0.5.6.vsix` file.
+1.  **Download** the `paradox-script-formatter-0.5.7.vsix` file.
 2.  Open **VS Code**.
 3.  Go to the **Extensions View** (`Ctrl+Shift+X`).
 4.  Click the **three dots icon (...)** at the top-right of the Extensions menu.
 5.  Select **"Install from VSIX..."**.
-6.  Locate and select the `paradox-script-formatter-0.5.6.vsix` file.
+6.  Locate and select the `paradox-script-formatter-0.5.7.vsix` file.
 
 Alternatively, you can install it via the command line:
 
 ```bash
-code --install-extension paradox-script-formatter-0.5.6.vsix
+code --install-extension paradox-script-formatter-0.5.7.vsix
 ```
 
 ### Supported File Types
