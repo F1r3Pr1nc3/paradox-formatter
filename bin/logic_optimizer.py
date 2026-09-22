@@ -3250,11 +3250,62 @@ def should_be_compact(node):
 
 	return True
 
+def _raw_code_only(line):
+	"""The part of a raw line that can hold braces (text blocks, strings and comments removed)."""
+	line = re.sub(r'@\[[^\]]*\]|\[\[[^\]]*\]\]', '', line)
+	line = re.sub(r'"[^"]*"', '', line)
+	line = re.sub(r'#.*', '', line)
+	return line
+
+
+def _reindent_raw_block(raw_val, indent, tab='\t'):
+	"""Re-indent the raw text of a hybrid block ('switch', 'inverted_switch').
+
+	The raw text runs from the block's key to its own closing brace. Copying it verbatim kept
+	whatever indentation the source had, so a body line written at column 0 (or with spaces)
+	stayed collapsed on every run. Each line is now placed at the block's depth plus its own
+	brace depth inside the raw text; only the block's own closing brace is removed and
+	rewritten. Returns None when the raw text does not end in a closing brace.
+	"""
+	text = raw_val.rstrip()
+	if not text.endswith('}'):
+		return None
+	text = text[:-1]
+	lines = text.split('\n')
+	while len(lines) > 1 and lines[-1].strip() == '':
+		lines.pop()
+	out_lines = [indent + lines[0].strip()]
+	depth = 1  # inside the block
+	for line in lines[1:]:
+		stripped = line.strip()
+		if not stripped:
+			out_lines.append('')
+			continue
+		code = _raw_code_only(line)
+		closes = stripped.startswith('}')
+		level = depth - 1 if closes else depth
+		out_lines.append(indent + tab * max(0, level) + stripped)
+		net = code.count('{') - code.count('}')
+		depth = level + net + (1 if closes else 0)
+		if depth < 0:
+			return None
+	out_lines.append(indent + '}')
+	return '\n'.join(out_lines)
+
+
 def node_to_string(node, depth=0, be_compact=False):
 	indent = "\t" * depth
 	if node.get('type') == 'comment':
 		return f"{indent}{node['val'].rstrip()}"
 	if node.get('type') == 'raw_block':
+		# A hybrid block ('switch', 'inverted_switch') is script: re-indent it line by line so
+		# a body line the source had collapsed (column 0, spaces, mixed) comes back aligned.
+		# The template-ish RAW_BLOCKS ('resource_terms', 'in_breach_of', ...) stay verbatim -
+		# their leading whitespace can be meaningful.
+		if str(node.get('key', '')) in HYBRID_RAW_BLOCKS:
+			reindented = _reindent_raw_block(node['val'], indent)
+			if reindented is not None:
+				return reindented
 		content_to_indent = node['val'].rstrip().rstrip('}').rstrip()
 		# Ensure the raw content always ends with a newline
 		# to make the replace operation consistent for the final '}'
@@ -3398,6 +3449,13 @@ def node_to_string(node, depth=0, be_compact=False):
 			raw_val = node['_raw']
 			# Simple line count check
 			if raw_val.count('\n') < formatted_str.count('\n'):
+				# Use the raw content, but with its indentation re-based: copying it verbatim
+				# kept whatever the source had, so a collapsed body line (column 0, spaces,
+				# mixed) stayed collapsed on every single run.
+				reindented = _reindent_raw_block(raw_val, indent)
+				if reindented is not None:
+					return reindented
+				# Fallback for anything unexpected: previous verbatim behaviour.
 				# Use raw content, ensuring closing brace is indented correctly
 				content_to_indent = raw_val.rstrip().rstrip('}').rstrip()
 				content_to_indent += f'\n{indent}}}'
@@ -3507,6 +3565,30 @@ def process_text(content):
 		print(f"[Logic Optimizer] Error: {e}", file=sys.stderr)
 		return original_content, False
 
+def check_indentation(text):
+	"""Lines whose tab indentation does not match their brace depth (1 tab per level).
+
+	Used by --check-indent. The renderer keeps blocks aligned (including the raw text of
+	'switch' blocks), so anything reported here is either a construct it does not model or a
+	line that needs another pass.
+	"""
+	issues = []
+	depth = 0
+	for index, line in enumerate(text.split('\n')):
+		stripped = line.strip()
+		if not stripped:
+			continue
+		code = _raw_code_only(line)
+		expected = depth - (1 if stripped.startswith('}') else 0)
+		actual = len(line) - len(line.lstrip('\t'))
+		if actual != expected:
+			issues.append((index + 1, actual, expected, stripped))
+		depth += code.count('{') - code.count('}')
+		if depth < 0:
+			depth = 0
+	return issues
+
+
 if __name__ == "__main__":
 	# Force UTF-8 for stdin/stdout to handle unicode correctly across platforms/locales
 	if sys.version_info >= (3, 7):
@@ -3521,6 +3603,8 @@ if __name__ == "__main__":
 	parser.add_argument("--safe-navigation", choices=('auto', 'fold', 'revert', 'ignore'), default=None,
 						help="Safe navigation handling: auto (mirror the file's style), fold, revert or ignore")
 	parser.add_argument("--use-safe-navigation", action="store_true", help="Legacy alias for --safe-navigation fold")
+	parser.add_argument("--check-indent", action="store_true",
+					help="Report lines whose indentation does not match their block depth (stderr, and in the JSON as indent_issues)")
 	args, unknown = parser.parse_known_args()
 
 	NO_COMPACT = args.no_compact
@@ -3534,4 +3618,19 @@ if __name__ == "__main__":
 		"content": new_content,
 		"changed": changed
 	}
+	if args.check_indent:
+		before = check_indentation(stdin_content)
+		after = check_indentation(new_content)
+		for line_no, actual, expected, text in before:
+			print(f"  input line {line_no}: {actual} tab(s), expected {expected} | {text}", file=sys.stderr)
+		print(f"[Logic Optimizer] --check-indent: {len(before)} line(s) in the input, "
+			f"{len(after)} left after formatting", file=sys.stderr)
+		output["indent_issues"] = [
+			{"line": line_no, "tabs": actual, "expected": expected, "text": text}
+			for line_no, actual, expected, text in before
+		]
+		output["indent_issues_after"] = [
+			{"line": line_no, "tabs": actual, "expected": expected, "text": text}
+			for line_no, actual, expected, text in after
+		]
 	print(json.dumps(output))

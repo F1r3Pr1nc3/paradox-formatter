@@ -87,6 +87,33 @@ nor_leftover = 'x = {\n\tNOR = {\n\t\texists = event_target:T\n\t\tevent_target:
 out = run(nor_leftover)
 check('dead NOR leftover repaired', 'event_target:T? = { allows_slavery = no }' in ' '.join(out.split()), out)
 
+# --- switch blocks ('raw_block') must be re-indented, not copied verbatim --------------
+SWITCH_CASES = {
+	'switch body at column 0': (
+		'e = {\n\ttrigger = {\n\t\tswitch = {\n\t\t\tswitch = is_country_type\nnew_type = { is_ai = no }\n\t\t}\n\t}\n}\n',
+		['\t\tswitch = {', '\t\t\tswitch = is_country_type', '\t\t\tnew_type = { is_ai = no }', '\t\t}']),
+	'switch body with spaces': (
+		'e = {\n\ttrigger = {\n\t\tswitch = {\n\t\t\tswitch = is_country_type\n    new_type = { is_ai = no }\n\t\t}\n\t}\n}\n',
+		['\t\tswitch = {', '\t\t\tswitch = is_country_type', '\t\t\tnew_type = { is_ai = no }', '\t\t}']),
+	'one-line switch keeps its inner braces': (
+		'e = {\n\ttrigger = {\n\t\tswitch = { switch = is_country_type default = { is_ai = no } }\n\t}\n}\n',
+		['\t\tswitch = { switch = is_country_type default = { is_ai = no }', '\t\t}']),
+}
+for name, (source, expected_lines) in SWITCH_CASES.items():
+	out = run(source)
+	body = out.split('\n')
+	check(name + ': re-indented', all(any(line == exp for line in body) for exp in expected_lines), out)
+	check(name + ': no indentation issues left', not optimizer.check_indentation(out), out)
+	check(name + ': still stable', run(out) == out, out)
+
+# a stale, collapsed body in the file is repaired by one run
+COLLAPSED = ('e = {\n\ttrigger = {\n\t\tfrom.owner = { is_country_type = ai_empire }\n\t\tswitch = {\n'
+	'\t\t\tswitch = is_country_type\n\t\t\tdefault = {\n\t\tis_ai = no\n\t\t\t}\n\t\t}\n\t}\n}\n')
+check('collapsed switch body reports issues in the input', len(optimizer.check_indentation(COLLAPSED)) > 0)
+fixed = run(COLLAPSED)
+check('collapsed switch body is repaired', not optimizer.check_indentation(fixed), fixed)
+check('repaired switch body is stable', run(fixed) == fixed, fixed)
+
 print('=' * 60)
 print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))
 sys.exit(1 if failed else 0)

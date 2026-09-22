@@ -174,6 +174,12 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 		flat(await formatDocument(mixedIndent, { insertSpaces: false, tabSize: 4 })),
 		flat(['starbase_event = {', '\tid = crisis.2610', '\ttrigger = {', '\t\thas_owner = yes', '\t}', '}'].join('\n')));
 
+	// 14: a collapsed switch body inside a selection is re-indented like the rest
+	const switched = ['e = {', '\ttrigger = {', '\t\tswitch = {', '\t\t\tswitch = is_country_type', 'new_type = { is_ai = no }', '\t\t}', '\t}', '}'].join('\n');
+	check('14. a collapsed switch body inside a selection is re-indented',
+		flat(await formatSelection(switched, 2, 5)),
+		flat(['\t\tswitch = {', '\t\t\tswitch = is_country_type', '\t\t\tnew_type = { is_ai = no }', '\t\t}'].join('\n')));
+
 	console.log('='.repeat(60));
 	console.log('range formatter: %d/%d passed', pass, pass + fail);
 	process.exit(fail ? 1 : 0);

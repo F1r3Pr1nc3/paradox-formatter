@@ -34,6 +34,7 @@ Unlike other formatters that delete code context, this formatter treats your cod
 
   * **Preserves Comments:** `# Comments` are protected and restored exactly where they were.
   * **Preserves Strings:** Strings like `name = "don't split { here }"` are safe from accidental formatting.
+  * **Re-indents raw blocks:** the contents of `switch`/`inverted_switch` blocks are script, so they are re-indented line by line - a body line left at column 0 (or indented with spaces) no longer stays collapsed through every run. Template-style blocks (`resource_terms`, `in_breach_of`, `discrete_terms`) are still kept verbatim, because their leading whitespace can be meaningful.
 
 ### 3\. Format Selection (Range Formatting)
 
@@ -167,6 +168,19 @@ Notes:
 * A `xyz? = { ... }` node is never negated (`exists AND ...` cannot be negated by flipping only its inner value), and trigger-side conditionals (`if = { limit = L body }`, i.e. `L implies body`) are never folded into `scope? = ...` - inside `allow`, `potential`, `destroy_trigger` and `trigger` blocks they are rewritten as `OR = { NOT = { L } body }` instead (see section 4).
 * When reverting, the `if = { limit = { exists = xyz } xyz = { ... } }` wrapper is only written inside known effect scopes; everywhere else the flat `exists = xyz` + `xyz = { ... }` pair is used.
 * **Migration:** the old boolean `paradox-formatter.useSafeNavigation` option was replaced by this setting - `useSafeNavigation: true` corresponds to `safeNavigation: "fold"`.
+
+### 7. Diagnostics (CLI)
+
+`--check-indent` reports every line whose indentation does not match its block depth (the tool's rule is one tab per level), for the input and for the result:
+
+```bash
+py bin/logic_optimizer.py --safe-navigation fold --check-indent < yourfile.txt
+```
+
+* stderr lists the input's offenders as `input line N: <tabs> tab(s), expected <depth> | <text>` plus a summary `N line(s) in the input, M left after formatting`;
+* the JSON output carries them as `indent_issues` (input) and `indent_issues_after` (what the formatter left), so a script can act on them.
+
+Anything still listed *after* formatting is a construct the renderer does not model (or a line that needs another pass) - useful to audit a whole mod with a single command.
 
 -----
 
