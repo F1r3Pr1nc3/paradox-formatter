@@ -46,6 +46,23 @@ The extension can now recognize and simplify complex logical expressions, such a
 
 Inside `allow`, `potential`, `destroy_trigger` and `trigger` blocks a trigger-side conditional is rewritten as the equivalent implication: `if = { limit = L body }` means "if `L` then `body`", which is exactly `OR = { NOT = { L } body }`. In a container the formatter does not know (`my_scripted_trigger = { ... }` and the like) a conditional is rewritten only when it can only be trigger script - its body consisting of trigger leaves (`is_owned_by = ...`, `is_same_value = ...`, comparisons, `any_*`/`count_*`, logic) - because an effect body can never look like that; conditionals that use scope blocks in their limit or body are left untouched there. Conditional chains (`else_if`/`else`) keep their form, effect-side conditionals are never touched, and the whole rewrite is independent of the safe navigation setting. A conditional that holds a tooltip (`custom_tooltip` or its `text` key, anywhere in the limit or body) is always left as written, because tooltips exist in trigger and effect script alike and moving one into an OR branch - or into the negated limit - would change when it is shown.
 
+Alongside that, the formatter repairs a specific dead leftover that older builds of this extension used to write: `NOR = { exists = x  x = { C... } }`. While `x` exists the guard makes the NOR false, and while it is missing the block cannot be true, so the script behind it was really the guarded, negated block. In `fold` mode it becomes `x? = { NOT = { C... } }`, which the usual simplification turns into `x? = { <negated C...> }`:
+
+```paradox
+NOR = {
+    exists = event_target:MSI_country
+    event_target:MSI_country = { allows_slavery = yes }
+}
+```
+
+becomes
+
+```paradox
+event_target:MSI_country? = { allows_slavery = no }
+```
+
+Only that exact shape is repaired - `exists = x` plus a block on the same scope holding a single condition - so valid idioms like `NOR = { exists = archaeological_site  has_planet_flag = y }` and blocks with several conditions stay untouched. Note it is a repair rather than a rewrite: the NOR form is dead while the scope exists, and the guarded block is what the script was meant to say.
+
 **Before:**
 ```paradox
 allow = {

@@ -1092,6 +1092,45 @@ def _has_following_else(node_list, idx):
 	return False
 
 
+def _dead_nor_scope_block(node):
+	"""Recognise the broken 'NOR = { exists = X  X = { C.. } }' leftover.
+
+	While X exists the first child is true, so the NOR is false no matter the second
+	child; while X is missing the block cannot be true either. The pattern is what an
+	older, broken conversion produced from a guarded, negated block ('X exists' AND X does
+	not match C..), so it is repaired into that form - see the caller. Only the exact shape
+	with the same scope on both sides is accepted; a NOR that guards plain conditions
+	('NOR = { exists = x  has_planet_flag = y }') is valid script and is left alone.
+	"""
+	if str(node.get('key', '')) != 'NOR' or not isinstance(node.get('val'), list):
+		return None
+	children = [c for c in node['val'] if c.get('type') == 'node']
+	if len(children) != 2:
+		return None
+	guard_name = None
+	block = None
+	for child in children:
+		key = str(child.get('key', ''))
+		if key == 'exists' and child.get('op') == '=' and child.get('val') and not isinstance(child.get('val'), list):
+			guard_name = str(child['val'])
+			continue
+		if block is not None:
+			return None
+		block = child
+	if not guard_name or block is None:
+		return None
+	if not isinstance(block.get('val'), list) or _is_safe_nav_key(block.get('key', '')):
+		return None
+	if str(block.get('key', '')).lower() != guard_name.lower() or not _is_known_scope(guard_name):
+		return None
+	block_children = [c for c in block['val'] if c.get('type') == 'node']
+	# Only a single condition: with several the repair would have to guess whether the block
+	# was negated as a whole ('not (a and b)') or condition by condition ('not a and not b').
+	if len(block_children) != 1:
+		return None
+	return guard_name, block
+
+
 def _contains_exception_key(nodes, depth=0):
 	"""True when script in there uses 'custom_tooltip' or 'text' anywhere."""
 	if depth > 8:
@@ -1569,6 +1608,39 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			node_list[idx] = or_node
 			changed_any = True
 			print("Rewrote trigger if into OR implication", file=sys.stderr)
+
+	# --- REPAIR 'NOR = { exists = X  X = { C.. } }' ---
+	# That leftover is always false while X exists, so the script it came from can only have
+	# been the guarded, negated block: 'X? = { NOT = { C.. } }' (the tool wrote the broken
+	# shape in older versions). Only this exact shape is repaired, and only when creating
+	# safe navigation is wanted at all.
+	if _ACTIVE_SAFE_NAV == 'fold':
+		for idx in range(len(node_list)):
+			node = node_list[idx]
+			if node.get('type') != 'node' or str(node.get('key', '')) != 'NOR':
+				continue
+			dead = _dead_nor_scope_block(node)
+			if not dead:
+				continue
+			scope_name, block = dead
+			# Comments inside the block stay at block level: the NOT below is simplified in
+			# place by later passes, which would drop comments sitting next to its condition.
+			block_comments = [c for c in block.get('val', []) if c.get('type') == 'comment']
+			inner = {'key': 'NOT', 'op': '=', 'val': [c for c in block.get('val', []) if c.get('type') == 'node'], 'type': 'node'}
+			for meta in ('_cm_inline', '_cm_open', '_cm_close'):
+				if meta in block:
+					inner[meta] = inner.get(meta, '') + block.pop(meta)
+			block['key'] = scope_name + '?'
+			block['val'] = block_comments + [inner]
+			# The block replaces the NOR; its comments move onto the block.
+			for meta in ('_cm_inline', '_cm_open', '_cm_close'):
+				if meta in node:
+					block[meta] = node[meta] + block.get(meta, '')
+			if node.get('_cm_preceding') and not block.get('_cm_preceding'):
+				block['_cm_preceding'] = node['_cm_preceding']
+			node_list[idx] = block
+			changed_any = True
+			print(f"Repaired dead NOR into safe navigation: {scope_name}?", file=sys.stderr)
 
 	# --- OR NEGATION FOLD ---
 	# 'OR = { NOT = { exists = X }  X = { NOT = { C.. } } }' says 'not(exists X) OR
