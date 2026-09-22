@@ -1,0 +1,92 @@
+"""Regression test for the logic optimizer (bin/logic_optimizer.py).
+
+Run with:  python test/logic_optimizer_cases.test.py
+
+Covers the two things that went wrong around scope blocks in conditions:
+  * comments must never be duplicated ('NOR = { exists = X  X = { # c ... } }' and the
+    conditional it came from are the shapes where that used to happen), and
+  * a conditional whose body is a scope block must keep its meaning - the OR the
+    implication rewrite produces must not be merged into a NOR/NAND, because
+    'X = { NOT = { k } }' is not the negation of 'X = { k }' while X may be missing.
+"""
+import importlib.util
+import io
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+spec = importlib.util.spec_from_file_location('logic_optimizer', os.path.join(ROOT, 'bin', 'logic_optimizer.py'))
+optimizer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(optimizer)
+
+COMMENT = 'Subject integration is handled in shroud.70'
+BLOCK = ("\t\tif = {\n"
+	'\t\t\tlimit = { exists = fromfrom }\n'
+	'\t\t\tfrom = { # ' + COMMENT + '\n'
+	'\t\t\t\tNOT = { is_same_value = root.fromfrom }\n'
+	'\t\t\t}\n'
+	'\t\t}\n')
+
+SHELLS = {
+	'trigger container': 'shroud_event = {\n\tid = shroud.70\n\ttrigger = {\n' + BLOCK + '\t}\n}\n',
+	'allow container': 'decision = {\n\tallow = {\n' + BLOCK + '\t}\n}\n',
+	'unknown container': 'my_trigger = {\n' + BLOCK + '}\n',
+	'effect container': 'shroud_event = {\n\timmediate = {\n' + BLOCK + '\t}\n}\n',
+}
+
+passed = failed = 0
+
+
+def run(text, mode='fold'):
+	optimizer.SAFE_NAVIGATION_MODE = mode
+	optimizer.USE_SAFE_NAVIGATION = True
+	saved = sys.stderr
+	sys.stderr = io.StringIO()
+	try:
+		content, _ = optimizer.process_text(text)
+	finally:
+		sys.stderr = saved
+	return content
+
+
+def check(title, condition, detail=''):
+	global passed, failed
+	if condition:
+		passed += 1
+		print('[ok]   ' + title)
+	else:
+		failed += 1
+		print('[FAIL] ' + title)
+		if detail:
+			for line in detail.split('\n'):
+				print('       |' + line)
+
+
+for name, text in SHELLS.items():
+	for mode in ('fold', 'ignore', 'revert'):
+		out = run(text, mode)
+		check('%s / %s: comment kept exactly once' % (name, mode), out.count(COMMENT) == 1, out)
+		stable = run(out, mode)
+		check('%s / %s: stable' % (name, mode), stable.replace('\n\n', '\n') == out.replace('\n\n', '\n'), out + '---\n' + stable)
+
+out = run(SHELLS['trigger container'])
+check('trigger: implication becomes an OR', 'OR = {' in out and 'if = {' not in out, out)
+check('trigger: OR is not merged into a NAND', 'NAND = {' not in out, out)
+check('trigger: the scope block keeps its own NOT', 'from = {' in out and 'NOT = { is_same_value = root.fromfrom }' in out, out)
+
+out = run(SHELLS['unknown container'])
+check('unknown container: conditional untouched', 'if = {' in out and 'OR = {' not in out, out)
+out = run(SHELLS['effect container'])
+check('effect container: conditional untouched', 'if = {' in out and 'OR = {' not in out, out)
+
+leaf = 'decision = {\n\tallow = {\n\t\tif = {\n\t\t\tlimit = { is_ai = no }\n\t\t\tis_homeworld = yes\n\t\t}\n\t}\n}\n'
+out = run(leaf)
+check('plain trigger leaves still convert to OR', 'OR = {' in out and 'if = {' not in out, out)
+
+nor_leftover = 'x = {\n\tNOR = {\n\t\texists = event_target:T\n\t\tevent_target:T = { allows_slavery = yes }\n\t}\n}\n'
+out = run(nor_leftover)
+check('dead NOR leftover repaired', 'event_target:T? = { allows_slavery = no }' in ' '.join(out.split()), out)
+
+print('=' * 60)
+print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))
+sys.exit(1 if failed else 0)

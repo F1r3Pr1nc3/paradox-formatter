@@ -1083,6 +1083,40 @@ def _negated_safe_nav_block(node, guard_scopes):
 	return scope_name, inner[0]
 
 
+def _is_negation_node_for_unwrap(node, guaranteed_scopes=None):
+	"""'_is_negation_node()', but a scope block only counts as a negation when its scope is
+	known to exist.
+
+	'X = { NOT = { k } }' is not the negation of 'X = { k }' while X may be missing (the
+	block is false then, while its negation would be true), so such a node must not be
+	unwrapped into its positive form by the NOR/NAND extractions.
+	"""
+	if not _is_negation_node(node):
+		return False
+	if isinstance(node.get('val'), list) and _is_unguarded_scope_block(str(node.get('key', '')), node, guaranteed_scopes):
+		return False
+	return True
+
+
+def _carries_comment(nodes, comment_text):
+	"""True when one of the nodes already holds that comment.
+
+	'_get_positive_form()' can return the node itself (or a copy of it, for a scope block
+	whose negation was unwrapped), and that copy already carries the comment - adding it
+	again would print it twice.
+	"""
+	wanted = str(comment_text or '').strip()
+	if not wanted:
+		return True
+	for node in nodes:
+		if node.get('type') != 'node':
+			continue
+		for meta in ('_cm_open', '_cm_inline', '_cm_close'):
+			if wanted in str(node.get(meta, '')):
+				return True
+	return False
+
+
 def _has_following_else(node_list, idx):
 	"""True when the conditional at 'idx' is followed by an 'else'/'else_if'."""
 	for nxt in node_list[idx + 1:]:
@@ -1536,8 +1570,14 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 				node_items = [n for n in sequence if n['type'] == 'node']
 
+				# A scope block is not equivalent to its positive form while the scope may be
+				# missing ('from = { NOT = { k } }' is not the negation of 'from = { k }'), so
+				# such a sequence is left for the other passes instead of being merged.
+				unguarded_scope_block = any(
+					_is_unguarded_scope_block(str(n.get('key', '')), n, guaranteed) for n in node_items)
+
 				# This conversion always requires a pre-existing 'NOT/NOR/NAND'
-				if len(node_items) > 1 and any(n.get('key') in NEGATION_LOGIC_KEYS for n in node_items):
+				if len(node_items) > 1 and not unguarded_scope_block and any(n.get('key') in NEGATION_LOGIC_KEYS for n in node_items):
 					# Merge the sequence into a single NOR/NAND block
 					combined_children = []
 					for item in sequence:
@@ -1547,6 +1587,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 						positive_children = _get_positive_form(item, guaranteed)
 						cm_open = item.get('_cm_open')
+						if cm_open and _carries_comment(positive_children, cm_open):
+							# The positive form is (a copy of) the item and already carries the
+							# comment, so moving it again would print it twice.
+							cm_open = None
 
 						if cm_open and positive_children:
 							if len(positive_children) == 1:
@@ -2294,7 +2338,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 				children_nodes = [n for n in node['val'] if n['type'] == 'node']
 				# NOR <=> AND = { 'NO'/'NOT' ... }
-				if children_nodes and all(_is_negation_node(c) or (c.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(c, dry_run=True, guaranteed_scopes=guaranteed)) for c in children_nodes) and any(c.get('key') in NEGATION_LOGIC_KEYS or c.get('val') == 'no' for c in children_nodes):
+				if children_nodes and all(_is_negation_node_for_unwrap(c, guaranteed) or (c.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(c, dry_run=True, guaranteed_scopes=guaranteed)) for c in children_nodes) and any(c.get('key') in NEGATION_LOGIC_KEYS or c.get('val') == 'no' for c in children_nodes):
 					# User preference: All negative boolean should be merged into NOR, but avoid double negation ('yes' becoming 'no' inside).
 					# Only block 'yes' booleans.
 					if all(c.get('val') != 'yes' for c in children_nodes):
@@ -3040,7 +3084,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					print("Created NAND from OR-NOT structure", file=sys.stderr)
 
 				# NAND <=> OR = { 'NO'/'NOT' ... }
-				elif all(_is_negation_node(n) or (n.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(n, dry_run=True, guaranteed_scopes=guaranteed)) for n in children) and any(n.get('key') in NEGATION_LOGIC_KEYS or n.get('val') == 'no' for n in children):
+				elif all(_is_negation_node_for_unwrap(n, guaranteed) or (n.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(n, dry_run=True, guaranteed_scopes=guaranteed)) for n in children) and any(n.get('key') in NEGATION_LOGIC_KEYS or n.get('val') == 'no' for n in children):
 					new_children = []
 					for item in node['val']:
 						if item['type'] == 'comment':
