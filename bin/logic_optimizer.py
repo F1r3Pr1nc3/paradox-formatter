@@ -146,6 +146,14 @@ GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'calc_true_if')
 # equivalent 'OR = { NOT = { L } body }' (L implies body). All four are trigger blocks, so
 # the rewrite can never touch an effect-side conditional.
 IF_IMPLICATION_CONTAINERS = ('allow', 'potential', 'destroy_trigger', 'trigger')
+# Positive evidence that script can only be trigger script, used to recognise a trigger
+# conditional inside a container we know nothing about (scripted triggers and similar).
+# Comparisons exist only in triggers, and these names/prefixes are trigger-only; anything
+# unknown is deliberately not accepted.
+TRIGGER_COMPARISON_OPS = ('>', '>=', '<', '<=', '!=')
+TRIGGER_ONLY_KEYWORDS = ('exists', 'value', 'count', 'custom_tooltip', 'fail_text')
+TRIGGER_KEY_PREFIXES = ('is_', 'has_', 'can_', 'num_', 'count_', 'any_', 'all_')
+TRIGGER_GUESS_BLOCK_KEYS = ('if', 'else_if', 'else', 'custom_tooltip')
 # Containers that hold effects only: inside them 'if = { limit = L body }' can be folded
 # into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
 # same conditional means 'L implies body' and has to become an OR instead.
@@ -1112,6 +1120,14 @@ def _if_implication_node(if_node):
 		neg_limit = {'key': 'NOT', 'op': '=', 'val': [limit_nodes[0]], 'type': 'node'}
 	else:
 		neg_limit = {'key': 'NAND', 'op': '=', 'val': limit_nodes, 'type': 'node'}
+	# Comments that lived on or in the limit move onto the negation it becomes - dropping
+	# the limit node would drop them (inline comment after 'limit = {', leading ones, ...).
+	for meta in ('_cm_inline', '_cm_open', '_cm_close', '_cm_preceding'):
+		if meta in limit_node:
+			neg_limit[meta] = limit_node[meta]
+	limit_comments = [c for c in limit_node.get('val', []) if c.get('type') == 'comment']
+	if limit_comments:
+		neg_limit['val'] = limit_comments + list(neg_limit['val'])
 	if len(body_nodes) == 1:
 		body = body_nodes[0]
 	else:
@@ -1122,6 +1138,77 @@ def _if_implication_node(if_node):
 		if meta in if_node:
 			or_node[meta] = if_node[meta]
 	return or_node
+
+
+def _looks_like_trigger_node(node, depth=0):
+	"""Positive evidence that a node can only be trigger script.
+
+	A comparison operator is trigger-only, and so are the trigger naming conventions
+	('is_ai', 'has_owner', 'num_pops', 'count_owned_planets', 'any_owned_planet', 'exists').
+	Anything else - effect verbs like 'set_'/'add_', unknown custom names - is not accepted,
+	so the guess never turns an effect conditional into an OR.
+	"""
+	if node.get('type') != 'node' or depth > 6:
+		return False
+	key = str(node.get('key', ''))
+	low = key.lower()
+	if node.get('op') in TRIGGER_COMPARISON_OPS:
+		return True
+	val = node.get('val')
+	if not isinstance(val, list):
+		return low in TRIGGER_ONLY_KEYWORDS or low.startswith(TRIGGER_KEY_PREFIXES)
+	children = [c for c in val if c.get('type') == 'node']
+	if not children:
+		return False
+	if (key in TRIGGER_GUESS_BLOCK_KEYS or key in TRIGGER_CONTEXT_SCOPES or low.endswith('_trigger')
+			or TRIGGER_QUANTIFIER_RE.match(key) is not None or _is_known_scope(key)):
+		# Logic, trigger containers, quantifiers and scopes: the children have to be
+		# trigger script as well.
+		return all(_looks_like_trigger_node(child, depth + 1) for child in children)
+	return False
+
+
+def _has_scope_block(nodes, depth=0):
+	"""True when any node in there is a block on a scope link ('from = { ... }').
+
+	Such a block is only true while the scope exists, which the generic OR/NOR
+	simplifications do not model yet - so the trigger guess below keeps its hands off
+	conditionals whose limit or body uses scope blocks.
+	"""
+	if depth > 6:
+		return False
+	for node in nodes:
+		if node.get('type') != 'node':
+			continue
+		key = str(node.get('key', ''))
+		if isinstance(node.get('val'), list):
+			if _is_known_scope(key):
+				return True
+			if _has_scope_block(node['val'], depth + 1):
+				return True
+	return False
+
+
+def _if_condition_guesses_trigger(if_node):
+	"""True when 'if = { limit = L body }' can only be trigger script.
+
+	Used for containers we know nothing about: a body of trigger leaves (or of logic and
+	quantifiers holding them) can never be an effect, so such a conditional has to be the
+	trigger implication - 'L implies body' - and can be rewritten as an OR. Conditionals
+	whose limit or body uses scope blocks are excluded: their positive form can hit
+	simplifications that assume the scope exists, and guessing is not worth that.
+	"""
+	children = if_node.get('val')
+	if not isinstance(children, list):
+		return False
+	if any(c.get('type') != 'node' for c in children):
+		return False
+	body = [c for c in children if c.get('key') != 'limit']
+	if not body:
+		return False
+	if _has_scope_block(children):
+		return False
+	return all(_looks_like_trigger_node(c) for c in body)
 
 
 def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None, if_implication_context=None):
@@ -1438,12 +1525,20 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	# In a trigger list 'if = { limit = L body }' means 'L implies body', i.e.
 	# 'OR = { NOT = { L } body }', which is the form the script conversion writes for
 	# 'allow', 'potential', 'destroy_trigger' and 'trigger' blocks (IF_IMPLICATION_CONTAINERS).
-	# Conditional chains with 'else'/'else_if' cannot be expressed as one OR and keep their
-	# form; effect-side conditionals are never touched (they are not trigger context).
-	if in_if_implication and scope_context == 'trigger':
+	# A container we know nothing about (a scripted trigger and the like) is judged by the
+	# conditional itself: when its limit and body can only be trigger script, the
+	# implication is the right reading and the safe navigation operator is not. Conditional
+	# chains with 'else'/'else_if' cannot be expressed as one OR and keep their form;
+	# effect-side conditionals are never touched (they are not trigger context).
+	trigger_container = in_if_implication and scope_context == 'trigger'
+	# 'scope_context == trigger' also covers containers named '*_trigger', and None means
+	# we know nothing about the container at all (a plain custom block).
+	if trigger_container or scope_context in (None, 'trigger'):
 		for idx in range(len(node_list)):
 			node = node_list[idx]
 			if node.get('type') != 'node' or node.get('key') != 'if' or node.get('op') != '=':
+				continue
+			if not trigger_container and not _if_condition_guesses_trigger(node):
 				continue
 			if _has_following_else(node_list, idx):
 				continue

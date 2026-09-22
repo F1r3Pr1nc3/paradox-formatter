@@ -44,7 +44,7 @@ Allows formatting of just a specific block of code without touching the rest of 
 ### 4. Advanced Logic Optimization (NAND)
 The extension can now recognize and simplify complex logical expressions, such as nested `NAND` blocks, into a more readable and efficient format. This is particularly useful for complex AI logic or event scripting.
 
-Inside `allow`, `potential`, `destroy_trigger` and `trigger` blocks a trigger-side conditional is rewritten as the equivalent implication: `if = { limit = L body }` means "if `L` then `body`", which is exactly `OR = { NOT = { L } body }`. Conditional chains (`else_if`/`else`) keep their form, effect-side conditionals and other containers are never touched. This is independent of the safe navigation setting.
+Inside `allow`, `potential`, `destroy_trigger` and `trigger` blocks a trigger-side conditional is rewritten as the equivalent implication: `if = { limit = L body }` means "if `L` then `body`", which is exactly `OR = { NOT = { L } body }`. In a container the formatter does not know (`my_scripted_trigger = { ... }` and the like) a conditional is rewritten only when it can only be trigger script - its body consisting of trigger leaves (`is_owned_by = ...`, `is_same_value = ...`, comparisons, `any_*`/`count_*`, logic) - because an effect body can never look like that; conditionals that use scope blocks in their limit or body are left untouched there. Conditional chains (`else_if`/`else`) keep their form, effect-side conditionals are never touched, and the whole rewrite is independent of the safe navigation setting.
 
 **Before:**
 ```paradox
