@@ -180,6 +180,40 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 		flat(await formatSelection(switched, 2, 5)),
 		flat(['\t\tswitch = {', '\t\t\tswitch = is_country_type', '\t\t\tnew_type = { is_ai = no }', '\t\t}'].join('\n')));
 
+	// 15: the real crisis.2610 trigger with its inline comments (Vfix notes) must keep
+	// every comment and still fold the scope - this is the case reported twice.
+	const c2610 = ['starbase_event = {',
+		'\tid = crisis.2610',
+		'\ttrigger = {',
+		'\t\tfrom.owner = { is_country_type = ai_empire }',
+		'\t\tNOT = {',
+		'\t\t\tsolar_system = {',
+		'\t\t\t\tany_system_planet_colony = {',
+		'\t\t\t\t\thas_owner = yes # For populated systems, they need to invade first',
+		'\t\t\t\t\tNOT = { is_owned_by = from.owner } # Vfix: as said',
+		'\t\t\t\t}',
+		'\t\t\t}',
+		'\t\t}',
+		'\t}',
+		'}'].join('\n');
+	const c2610Out = await formatSelection(c2610, 2, 12);
+	const expectations = [
+		'solar_system? = {',
+		'has_owner = yes # For populated systems, they need to invade first',
+		'NOT = { is_owned_by = from.owner } # Vfix: as said',
+	];
+	const problems = expectations.filter((e) => !c2610Out.includes(e));
+	if (problems.length === 0) {
+		// no comment may be duplicated or dropped either
+		const count = (s, sub) => s.split(sub).length - 1;
+		if (count(c2610Out, 'Vfix') !== 1 || count(c2610Out, 'have to invade') > 0
+			|| count(c2610Out, 'they need to invade first') !== 1) {
+			problems.push('a comment was duplicated or dropped');
+		}
+	}
+	check('15. crisis.2610 keeps both inline comments and still folds the scope',
+		problems.length ? problems.join(' / ') : 'ok', 'ok');
+
 	console.log('='.repeat(60));
 	console.log('range formatter: %d/%d passed', pass, pass + fail);
 	process.exit(fail ? 1 : 0);
