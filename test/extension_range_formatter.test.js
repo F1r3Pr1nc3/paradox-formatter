@@ -60,6 +60,12 @@ async function formatSelection(text, startLine, endLine, options = { tabSize: 4,
 // Whitespace-insensitive comparison, for results whose line breaks are a style choice.
 const flat = (s) => String(s).replace(/\s+/g, ' ').trim();
 
+async function formatDocument(text, options = { insertSpaces: false, tabSize: 4 }) {
+	const doc = makeDocument(text);
+	const edits = await captured.provideDocumentFormattingEdits(doc, options);
+	return edits.length ? edits[0].newText : text;
+}
+
 let pass = 0, fail = 0;
 function check(title, got, expected) {
 	const ok = got === expected;
@@ -158,6 +164,15 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 	check('11. a selection cutting through a block keeps its closing braces',
 		await formatSelection(cut, 2, 4),
 		['\t\tc = yes', '\t}', '}'].join('\n'));
+
+	// 12-13: whole-document formatting honours the editor's indentation style
+	const mixedIndent = ['starbase_event = {', '\tid = crisis.2610', '    trigger = {', '\t\thas_owner = yes', '\t}', '}'].join('\n');
+	check('12. spaces stay spaces when the editor uses spaces',
+		flat(await formatDocument(mixedIndent, { insertSpaces: true, tabSize: 4 })),
+		flat(['starbase_event = {', '    id = crisis.2610', '    trigger = {', '        has_owner = yes', '    }', '}'].join('\n')));
+	check('13. tabs stay tabs when the editor uses tabs',
+		flat(await formatDocument(mixedIndent, { insertSpaces: false, tabSize: 4 })),
+		flat(['starbase_event = {', '\tid = crisis.2610', '\ttrigger = {', '\t\thas_owner = yes', '\t}', '}'].join('\n')));
 
 	console.log('='.repeat(60));
 	console.log('range formatter: %d/%d passed', pass, pass + fail);

@@ -287,6 +287,28 @@ class ParadoxDocumentFormatter {
 		return [vscode.TextEdit.replace(extendedRange, resultLines.join('\n'))];
 	}
 
+	// The Python formatter always emits tabs. Re-render the indentation the way the editor
+	// asked for, so a line that was indented with spaces does not come back as a tab (which
+	// looks like a collapsed indent when tabs are displayed narrower than the spaces were).
+	effectiveIndentOptions(options) {
+		if (options && typeof options.insertSpaces === 'boolean') {
+			return { insertSpaces: options.insertSpaces, tabSize: options.tabSize || 4 };
+		}
+		const editor = vscode.workspace.getConfiguration('editor');
+		return { insertSpaces: !!editor.get('insertSpaces'), tabSize: editor.get('tabSize') || 4 };
+	}
+
+	applyIndentStyle(text, indentOptions) {
+		if (!indentOptions.insertSpaces) {
+			return text;
+		}
+		const unit = ' '.repeat(indentOptions.tabSize);
+		return text.split('\n').map(line => {
+			const leading = (line.match(/^\t+/) || [''])[0];
+			return leading.length ? unit.repeat(leading.length) + line.slice(leading.length) : line;
+		}).join('\n');
+	}
+
 	// Format a selection through the Python tool, so the logic conversions (scope? folding,
 	// if -> OR, NOR repair, ...) run there as well. The fragment is wrapped in a throwaway
 	// block because the parser needs a complete document, the wrapper is stripped from the
@@ -386,7 +408,9 @@ class ParadoxDocumentFormatter {
 	// This now uses the Python bridge for whole-document formatting
 	async provideDocumentFormattingEdits(document, options) {
 		const text = document.getText();
-		const { content, changed } = await formatWithPythonBridge(text);
+		const bridgeResult = await formatWithPythonBridge(text);
+		const content = this.applyIndentStyle(bridgeResult.content, this.effectiveIndentOptions(options));
+		const changed = bridgeResult.changed || content !== text;
 
 		if (changed) {
 			const fullRange = new vscode.Range(
@@ -454,10 +478,11 @@ function activate(ctx) {
 					const document = await vscode.workspace.openTextDocument(file);
 					const text = document.getText();
 					const result = await formatWithPythonBridge(text);
-					if (result.changed) {
+					const content = formatter.applyIndentStyle(result.content, formatter.effectiveIndentOptions(undefined));
+					if (result.changed || content !== text) {
 						const edit = new vscode.WorkspaceEdit();
 						const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(text.length));
-						edit.replace(file, fullRange, result.content);
+						edit.replace(file, fullRange, content);
 						await vscode.workspace.applyEdit(edit);
 						await document.save();
 						formattedCount++;
