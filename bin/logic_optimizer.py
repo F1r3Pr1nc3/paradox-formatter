@@ -151,9 +151,13 @@ IF_IMPLICATION_CONTAINERS = ('allow', 'potential', 'destroy_trigger', 'trigger')
 # Comparisons exist only in triggers, and these names/prefixes are trigger-only; anything
 # unknown is deliberately not accepted.
 TRIGGER_COMPARISON_OPS = ('>', '>=', '<', '<=', '!=')
-TRIGGER_ONLY_KEYWORDS = ('exists', 'value', 'count', 'custom_tooltip', 'fail_text')
+TRIGGER_ONLY_KEYWORDS = ('exists', 'value', 'count', 'fail_text')
 TRIGGER_KEY_PREFIXES = ('is_', 'has_', 'can_', 'num_', 'count_', 'any_', 'all_')
-TRIGGER_GUESS_BLOCK_KEYS = ('if', 'else_if', 'else', 'custom_tooltip')
+TRIGGER_GUESS_BLOCK_KEYS = ('if', 'else_if', 'else')
+# A conditional holding one of these is never rewritten as an OR: tooltips work in both
+# trigger and effect script, and moving them into a branch (or into the negated limit)
+# would change when they are shown.
+IF_IMPLICATION_EXCEPTION_KEYS = ('custom_tooltip', 'text')
 # Containers that hold effects only: inside them 'if = { limit = L body }' can be folded
 # into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
 # same conditional means 'L implies body' and has to become an OR instead.
@@ -1088,15 +1092,32 @@ def _has_following_else(node_list, idx):
 	return False
 
 
+def _contains_exception_key(nodes, depth=0):
+	"""True when script in there uses 'custom_tooltip' or 'text' anywhere."""
+	if depth > 8:
+		return False
+	for node in nodes:
+		if node.get('type') != 'node':
+			continue
+		if str(node.get('key', '')).lower() in IF_IMPLICATION_EXCEPTION_KEYS:
+			return True
+		if isinstance(node.get('val'), list) and _contains_exception_key(node['val'], depth + 1):
+			return True
+	return False
+
+
 def _if_implication_node(if_node):
 	"""Rewrite a trigger conditional 'if = { limit = L body }' as 'OR = { NOT = { L } body }'.
 
 	In a trigger list such a conditional means 'L implies body', which is exactly
 	'not L OR body'. Returns None when it cannot be expressed as an OR (comments inside,
-	empty limit or body), so that nothing is dropped or reordered.
+	empty limit or body) so that nothing is dropped or reordered - and when the conditional
+	contains a tooltip ('custom_tooltip'/'text'), whose display would move into a branch.
 	"""
 	children = if_node.get('val')
 	if not isinstance(children, list):
+		return None
+	if _contains_exception_key(children):
 		return None
 	limit_node = None
 	body_nodes = []
