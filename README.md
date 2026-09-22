@@ -104,7 +104,7 @@ Enable or disable the four handling modes for the Stellaris **v4.4+ safe navigat
 | Mode | Behaviour |
 | --- | --- |
 | `auto` (default) | Mirror the file's own style: files that already use safe navigation get their `exists = xyz` + `xyz = { ... }` pairs folded into `xyz? = { ... }`; files without it are left untouched. |
-| `fold` | Always create safe navigation: `exists = xyz` **immediately** followed by `xyz = { ... }` (only comments may sit in between) becomes `xyz? = { ... }`; the scope-less `has_owner = yes` guard is folded the same way into a directly following `owner`/`space_owner` block. Targets Stellaris v4.4+. |
+| `fold` | Always create safe navigation: `exists = xyz` + `xyz = { ... }` becomes `xyz? = { ... }` (comments may sit in between, and so may other conditions - as long as none of them uses `xyz`); the scope-less `has_owner = yes` guard is folded the same way into an `owner`/`space_owner` block. Targets Stellaris v4.4+. |
 | `revert` | Always expand safe navigation back to `exists = xyz` + `xyz = { ... }`; inside known effect scopes the pair is wrapped in `if = { limit = { exists = xyz } ... }`. Targets pre-4.4 Stellaris. |
 | `ignore` | Never touch safe navigation - neither fold nor revert. |
 
@@ -117,7 +117,8 @@ Enable or disable the four handling modes for the Stellaris **v4.4+ safe navigat
 
 Notes:
 
-* Folding only happens in conjunctive lists (never inside `OR`/`NOR`/`NOT`/`calc_true_if`) and only when the scope block directly follows the guard; a redundant `exists = xyz` in front of an existing `xyz? = { ... }` is removed.
+* Folding only happens in conjunctive lists (never inside `OR`/`NOR`/`NOT`/`calc_true_if`), and only when dropping the guard cannot lose anything: the scope block either follows directly (comments aside) or every condition in between ignores that scope - `exists = from` + `is_owned_by = from` + `from = { ... }` keeps its guard, while `exists = from` + `has_star_flag = x` + `from = { ... }` folds. A redundant `exists = xyz` in front of an existing `xyz? = { ... }` is removed.
+* `exists = xyz` + `NOT = { xyz = { C... } }` becomes `xyz? = { NOT = { C... } }` (`NAND` instead of `NOT` when the block holds several conditions), because `xyz = { ... }` can only be true when the scope exists, so `exists AND NOT(C...)` is exactly `exists AND NOT(xyz = { C... })`.
 * A `xyz? = { ... }` node is never negated (`exists AND ...` cannot be negated by flipping only its inner value), and trigger-side conditionals (`if = { limit = L body }`, i.e. `L implies body`) are never converted.
 * When reverting, the `if = { limit = { exists = xyz } xyz = { ... } }` wrapper is only written inside known effect scopes; everywhere else the flat `exists = xyz` + `xyz = { ... }` pair is used.
 * **Migration:** the old boolean `paradox-formatter.useSafeNavigation` option was replaced by this setting - `useSafeNavigation: true` corresponds to `safeNavigation: "fold"`.

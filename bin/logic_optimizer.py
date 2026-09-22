@@ -901,6 +901,49 @@ def _resolve_safe_navigation_mode(tree):
 	return mode
 
 
+def _negated_scope_block(node, guard_scopes):
+	"""Recognise 'NOT/NOR/NAND = { scope = { ... } }'."""
+	if str(node.get('key', '')) not in ('NOT', 'NOR', 'NAND'):
+		return None
+	children = node.get('val')
+	if not isinstance(children, list):
+		return None
+	inner = None
+	for child in children:
+		if child.get('type') != 'node' or inner is not None:
+			return None
+		inner = child
+	if inner is None or not isinstance(inner.get('val'), list):
+		return None
+	scope_name = str(inner.get('key', ''))
+	if scope_name not in guard_scopes:
+		return None
+	return scope_name, inner, inner.get('val', [])
+
+
+def _uses_scope_as_value(nodes, scope_name):
+	"""True when a node dereferences the scope, e.g. 'is_owned_by = from'.
+
+	Used to keep an existence guard in front of a scope block: the guard may only be
+	dropped when the siblings between guard and block cannot touch that scope.
+	"""
+	if not scope_name:
+		return False
+	pattern = re.compile(r'(?<![\w@:])' + re.escape(str(scope_name)) + r'(?![\w])')
+	for node in nodes:
+		if node.get('type') != 'node':
+			continue
+		if pattern.search(str(node.get('key', ''))):
+			return True
+		val = node.get('val')
+		if isinstance(val, list):
+			if _uses_scope_as_value(val, scope_name):
+				return True
+		elif pattern.search(str(val)):
+			return True
+	return False
+
+
 def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 	changed_any = False
 	# New logic for NOT/comparison/NOR merge
@@ -1223,29 +1266,54 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 				guard_scopes = HAS_OWNER_SCOPE_GUARDS
 
 			if guard_scopes:
-				# Only replace a *directly adjacent* guard + scope block pair
-				# (comment nodes in between are fine). If other nodes sit in between, the
-				# guard also covers those nodes and must be preserved.
+				# A guard may only be dropped when it protects nothing but the scope block:
+				# either that block follows directly (comment nodes in between are fine),
+				# or the siblings in between never use the scope as a value - e.g.
+				# 'exists = from' / 'is_owned_by = from' / 'from = { ... }' keeps its guard,
+				# while 'exists = from' / 'has_star_flag = x' / 'from = { ... }' folds.
 				sibling_idx = -1
 				redundant_idx = -1
 				redundant_key = ''
+				negated_idx = -1
+				negated_name = ''
+				negated_node = None
+				negated_inner = None
+				negated_children = None
 				j = i + 1
 				while j < len(node_list):
 					cand = node_list[j]
 					if cand['type'] == 'comment':
 						j += 1
 						continue
-					if cand['type'] == 'node' and isinstance(cand.get('val'), list):
-						cand_key = str(cand.get('key', ''))
-						if cand_key in guard_scopes:
-							sibling_idx = j
-						elif cand_key.endswith('?') and cand_key[:-1] in guard_scopes:
-							# The block already is safe navigation: it carries the existence check
-							# itself, so the guard in front of it is redundant
-							# ('exists = x' AND 'x? = { ... }' is just 'x? = { ... }').
-							redundant_idx = j
-							redundant_key = cand_key
-					break
+					if cand['type'] != 'node':
+						break
+					is_block = isinstance(cand.get('val'), list)
+					cand_key = str(cand.get('key', ''))
+					if is_block and cand_key in guard_scopes:
+						sibling_idx = j
+						break
+					if is_block and cand_key.endswith('?') and cand_key[:-1] in guard_scopes:
+						# The block already is safe navigation: it carries the existence check
+						# itself, so the guard in front of it is redundant
+						# ('exists = x' AND 'x? = { ... }' is just 'x? = { ... }').
+						redundant_idx = j
+						redundant_key = cand_key
+						break
+					if is_block and cand_key in ('NOT', 'NOR', 'NAND'):
+						# 'exists = x' + 'NOT = { x = { C.. } }' means 'x exists AND NOT(C..)',
+						# which is exactly 'x? = { NOT = { C.. } }'. Detected here, folded below.
+						neg = _negated_scope_block(cand, guard_scopes)
+						if neg is not None:
+							negated_name, negated_inner, negated_children = neg
+							negated_idx = j
+							negated_node = cand
+							break
+					# Anything else lies between the guard and the scope block. Dropping the guard
+					# is only allowed when such a sibling cannot touch that scope:
+					# 'exists = from' / 'is_owned_by = from' / 'from = { ... }' must stay as is.
+					if any(_uses_scope_as_value([cand], name) for name in guard_scopes):
+						break
+					j += 1
 
 				if redundant_idx != -1:
 					cm_inline = node.get('_cm_inline')
@@ -1256,6 +1324,28 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 					changed_any = True
 					print(f"Removed redundant guard before safe navigation: {redundant_key}", file=sys.stderr)
 					continue
+
+				if negated_idx != -1:
+					inner_nodes = [c for c in negated_children if c.get('type') == 'node']
+					if inner_nodes:
+						if len(inner_nodes) == 1:
+							neg_node = {'key': 'NOT', 'op': '=', 'val': negated_children, 'type': 'node'}
+						else:
+							neg_node = {'key': 'NAND', 'op': '=', 'val': negated_children, 'type': 'node'}
+						for meta in ('_cm_inline', '_cm_open', '_cm_close'):
+							if meta in negated_inner:
+								neg_node[meta] = negated_inner[meta]
+						# Reuse the NOT/NOR/NAND node as the 'xyz?' node, so the siblings
+						# between the guard and the block keep their exact place.
+						negated_node['key'] = negated_name + '?'
+						negated_node['val'] = [neg_node]
+						cm_inline = node.get('_cm_inline')
+						if cm_inline:
+							negated_node['_cm_inline'] = cm_inline + negated_node.get('_cm_inline', '')
+						node_list.pop(i)
+						changed_any = True
+						print(f"Applied safe navigation (negated scope): {negated_name}?", file=sys.stderr)
+						continue
 
 				if sibling_idx != -1:
 					sibling = node_list[sibling_idx]
