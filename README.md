@@ -41,7 +41,8 @@ Allows formatting of just a specific block of code without touching the rest of 
 
   * **Shortcut:** `Ctrl + K`, `Ctrl + F` (or `Cmd + K`, `Cmd + F` on Mac)
   * A selection keeps its own base indentation (taken from the first selected line) and its blank lines, so formatting an event's `trigger = { ... }` block in place leaves the rest of the file untouched.
-  * Unlike Format Document, selection formatting only re-indents and normalises spacing - the logic conversions (`scope?` folding, `if` → `OR`, NOR repair) run on whole documents only.
+  * Selections run the same logic conversions as whole documents (`scope?` folding, `if` → `OR`, NOR repair): the block is wrapped, formatted by the Python tool, then re-based onto the selection's indentation so only the selected lines change.
+  * Selections that cut through a block (unbalanced braces) are only re-indented, and any failure falls back to that built-in re-indenter.
   * Regression test: `node test/extension_range_formatter.test.js`
 
 ### 4. Advanced Logic Optimization (NAND)

@@ -188,6 +188,20 @@ class ParadoxDocumentFormatter {
 		return line.replace(/@\[[^\]]*\]|\[\[[^\]]*\]\]/g, '');
 	}
 
+	// True when a fragment stands on its own (no block left open or closed early), which is
+	// what the Python tool needs to re-parse it safely.
+	isBalancedFragment(fragment) {
+		let depth = 0;
+		for (const raw of fragment.split('\n')) {
+			const line = this.rawBraceClean(raw.replace(/("(?:\\.|[^"\\])*")|(#.*)/g, ''));
+			depth += (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+			if (depth < 0) {
+				return false;
+			}
+		}
+		return depth === 0;
+	}
+
 	// This is the JS formatter for range (selection) formatting
 	formatRange(document, range, options) {
 		// Expand range to cover full lines to ensure correct indentation context
@@ -273,6 +287,102 @@ class ParadoxDocumentFormatter {
 		return [vscode.TextEdit.replace(extendedRange, resultLines.join('\n'))];
 	}
 
+	// Format a selection through the Python tool, so the logic conversions (scope? folding,
+	// if -> OR, NOR repair, ...) run there as well. The fragment is wrapped in a throwaway
+	// block because the parser needs a complete document, the wrapper is stripped from the
+	// answer, the levels are re-based onto the selection's own indentation and the author's
+	// blank lines are put back in front of the lines that survived unchanged.
+	// Returns null when the wrapper did not survive (selections that cut through a block and
+	// the like), so the caller can fall back to the built-in re-indenter.
+	async formatRangeWithPython(document, range, options) {
+		const start = new vscode.Position(range.start.line, 0);
+		const endLine = document.lineAt(range.end.line);
+		const end = new vscode.Position(range.end.line, endLine.text.length);
+		const extendedRange = new vscode.Range(start, end);
+
+		const fragment = document.getText(extendedRange);
+		if (!this.isBalancedFragment(fragment)) {
+			// The selection cuts through a block: wrapping it would let the parser's brace
+			// recovery eat the selection's own closing braces, so leave it to the re-indenter.
+			return null;
+		}
+		const baseLevel = this.baseIndentLevel(document, range, options);
+		const wrapperKey = '__pdx_selection__';
+		const wrapped = wrapperKey + ' = {\n' + fragment + '\n}\n';
+
+		// Try with the user's compacting setting first; when a small selection comes back on
+		// one line the wrapper is gone, so retry with --no-compact before giving up.
+		for (const forceCompact of [undefined, false]) {
+			const answer = await formatWithPythonBridge(wrapped, forceCompact);
+			const body = this.unwrapSelectionFragment(answer.content, wrapperKey);
+			if (body) {
+				return [vscode.TextEdit.replace(extendedRange, this.reindentSelection(body, fragment, baseLevel, options))];
+			}
+		}
+		return null;
+	}
+
+	// Strip the throwaway wrapper from the tool's answer; null when it is not intact.
+	unwrapSelectionFragment(content, wrapperKey) {
+		const lines = content.split('\n');
+		while (lines.length && lines[0].trim() === '') lines.shift();
+		while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+		if (lines.length < 2) {
+			return null;
+		}
+		if (lines[0].trim() !== wrapperKey + ' = {') {
+			return null;
+		}
+		if (lines[lines.length - 1].trim() !== '}') {
+			return null;
+		}
+		return lines.slice(1, lines.length - 1);
+	}
+
+	// Re-base the wrapped fragment onto the selection's indentation and restore the blank
+	// lines the underlying formatter normalises away.
+	reindentSelection(body, fragment, baseLevel, options) {
+		const result = body.map(line => {
+			if (line.trim().length === 0) {
+				return '';
+			}
+			// The wrapper added one level, so the first tab is dropped and the rest is
+			// re-indented starting at the selection's own base level.
+			const leading = (line.match(/^\t+/) || [''])[0];
+			return getIndent(baseLevel + Math.max(0, leading.length - 1), options) + line.slice(leading.length);
+		});
+
+		// A blank line in the fragment is put back in front of the next line that survived.
+		const original = fragment.split('\n');
+		let cursor = 0;
+		for (let i = 1; i < original.length; i++) {
+			if (original[i].trim().length === 0 || original[i - 1].trim().length !== 0) {
+				continue;
+			}
+			const next = original[i].trim();
+			const at = result.findIndex((line, idx) => idx >= cursor && line.trim() === next);
+			if (at < 0) {
+				continue;
+			}
+			if (at > cursor && result[at - 1].trim().length !== 0) {
+				result.splice(at, 0, '');
+				cursor = at + 1;
+			} else {
+				cursor = at + 1;
+			}
+		}
+		// Leading and trailing blank lines belong to the selection just as much.
+		if (original.length > 0 && result.length > 0
+			&& original[0].trim().length === 0 && result[0].trim().length !== 0) {
+			result.unshift('');
+		}
+		if (original.length > 0 && result.length > 0
+			&& original[original.length - 1].trim().length === 0 && result[result.length - 1].trim().length !== 0) {
+			result.push('');
+		}
+		return result.join('\n');
+	}
+
 	// This now uses the Python bridge for whole-document formatting
 	async provideDocumentFormattingEdits(document, options) {
 		const text = document.getText();
@@ -289,8 +399,17 @@ class ParadoxDocumentFormatter {
 		return [];
 	}
 
-	// This uses the old JS formatter for selection formatting
+	// Selections go through the Python tool as well, so the same conversions run; the
+	// built-in re-indenter stays as the fallback for anything the tool cannot handle.
 	async provideDocumentRangeFormattingEdits(document, range, options) {
+		try {
+			const converted = await this.formatRangeWithPython(document, range, options);
+			if (converted) {
+				return converted;
+			}
+		} catch (err) {
+			console.error('Selection formatting through the Python formatter failed, falling back to the built-in re-indenter:', err);
+		}
 		return this.formatRange(document, range, options);
 	}
 }

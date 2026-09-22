@@ -57,6 +57,9 @@ async function formatSelection(text, startLine, endLine, options = { tabSize: 4,
 	return edits[0].newText;
 }
 
+// Whitespace-insensitive comparison, for results whose line breaks are a style choice.
+const flat = (s) => String(s).replace(/\s+/g, ' ').trim();
+
 let pass = 0, fail = 0;
 function check(title, got, expected) {
 	const ok = got === expected;
@@ -97,11 +100,11 @@ const closing = ['a = {', '\tb = {', '\t\tc = yes', '\t}', '}'].join('\n');
 const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 
 (async () => {
-	check('1. an event trigger block keeps its indentation', await formatSelection(event, 6, 13),
+	check('1. an event trigger block keeps its indentation (and converts)', await formatSelection(event, 6, 13),
 		['\ttrigger = {',
 			'\t\tfrom.owner = { is_country_type = ai_empire }',
 			'\t\tNOT = {',
-			'\t\t\tsolar_system = {',
+			'\t\t\tsolar_system? = {',
 			'\t\t\t\tany_system_planet = { is_colony = yes } # For populated systems, they need to invade first',
 			'\t\t\t}',
 			'\t\t}',
@@ -115,7 +118,7 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 			'\ttrigger = {',
 			'\t\tfrom.owner = { is_country_type = ai_empire }',
 			'\t\tNOT = {',
-			'\t\t\tsolar_system = {',
+			'\t\t\tsolar_system? = {',
 			'\t\t\t\tany_system_planet = { is_colony = yes } # For populated systems, they need to invade first',
 			'\t\t\t}',
 			'\t\t}',
@@ -135,6 +138,26 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 
 	check('7. spaces honour tabSize', await formatSelection(withRaw, 2, 4, { tabSize: 2, insertSpaces: true }),
 		['  trigger = {', '    has_owner = yes', '  }'].join('\n'));
+
+	// 8-10: the logic conversions run for selections too (fold mode in the stubbed config)
+	const deadNor = ['meta = {', '\tif = {', '\t\tlimit = { exists = owner }', '\t\tis_homeworld = yes', '\t}', '}'].join('\n');
+	check('8. dead NOR leftover inside a selection is repaired',
+		flat(await formatSelection(['x = {', '\tNOR = {', '\t\texists = event_target:T', '\t\tevent_target:T = { allows_slavery = yes }', '\t}', '}'].join('\n'), 1, 4)),
+		flat('\tevent_target:T? = { allows_slavery = no }'));
+
+	check('9. exists + scope block inside a selection is folded',
+		flat(await formatSelection(['x = {', '\texists = event_target:T', '\tevent_target:T = { is_ai = no }', '}'].join('\n'), 1, 2)),
+		flat('\tevent_target:T? = { is_ai = no }'));
+
+	check('10. an if inside allow is converted to OR',
+		flat(await formatSelection(deadNor, 1, 4)),
+		flat('\tOR = { NOT = { exists = owner } is_homeworld = yes }'));
+
+	// 11: a selection that cuts through a block keeps the built-in re-indenter (nothing lost)
+	const cut = ['a = {', '\tb = {', '\t\tc = yes', '\t}', '}'].join('\n');
+	check('11. a selection cutting through a block keeps its closing braces',
+		await formatSelection(cut, 2, 4),
+		['\t\tc = yes', '\t}', '}'].join('\n'));
 
 	console.log('='.repeat(60));
 	console.log('range formatter: %d/%d passed', pass, pass + fail);
