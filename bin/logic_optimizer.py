@@ -142,6 +142,10 @@ HAS_OWNER_SCOPE_GUARDS = ('owner', 'space_owner')
 ALWAYS_PRESENT_SCOPES = ('root', 'this')
 # Containers whose children are ORed: a guard inside them does not cover its siblings.
 GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'calc_true_if')
+# Trigger containers whose 'if = { limit = L body }' conditionals are rewritten as the
+# equivalent 'OR = { NOT = { L } body }' (L implies body). 'allow' is the block the
+# script conversion targets - extend the tuple to cover more trigger containers.
+IF_IMPLICATION_CONTAINERS = ('allow',)
 # Containers that hold effects only: inside them 'if = { limit = L body }' can be folded
 # into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
 # same conditional means 'L implies body' and has to become an OR instead.
@@ -1067,8 +1071,63 @@ def _negated_safe_nav_block(node, guard_scopes):
 	return scope_name, inner[0]
 
 
-def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None):
+def _has_following_else(node_list, idx):
+	"""True when the conditional at 'idx' is followed by an 'else'/'else_if'."""
+	for nxt in node_list[idx + 1:]:
+		if nxt.get('type') == 'comment':
+			continue
+		return str(nxt.get('key', '')) in ('else', 'else_if')
+	return False
+
+
+def _if_implication_node(if_node):
+	"""Rewrite a trigger conditional 'if = { limit = L body }' as 'OR = { NOT = { L } body }'.
+
+	In a trigger list such a conditional means 'L implies body', which is exactly
+	'not L OR body'. Returns None when it cannot be expressed as an OR (comments inside,
+	empty limit or body), so that nothing is dropped or reordered.
+	"""
+	children = if_node.get('val')
+	if not isinstance(children, list):
+		return None
+	limit_node = None
+	body_nodes = []
+	for child in children:
+		if child.get('type') != 'node':
+			return None
+		if child.get('key') == 'limit' and isinstance(child.get('val'), list):
+			limit_node = child
+		else:
+			body_nodes.append(child)
+	if limit_node is None or not body_nodes:
+		return None
+	limit_nodes = []
+	for child in limit_node.get('val', []):
+		if child.get('type') != 'node':
+			return None
+		limit_nodes.append(child)
+	if not limit_nodes:
+		return None
+	if len(limit_nodes) == 1:
+		neg_limit = {'key': 'NOT', 'op': '=', 'val': [limit_nodes[0]], 'type': 'node'}
+	else:
+		neg_limit = {'key': 'NAND', 'op': '=', 'val': limit_nodes, 'type': 'node'}
+	if len(body_nodes) == 1:
+		body = body_nodes[0]
+	else:
+		body = {'key': 'AND', 'op': '=', 'val': body_nodes, 'type': 'node'}
+	or_node = {'key': 'OR', 'op': '=', 'val': [neg_limit, body], 'type': 'node'}
+	# Comments that sat on the conditional keep their place on the OR.
+	for meta in ('_cm_inline', '_cm_open', '_cm_close', '_cm_preceding'):
+		if meta in if_node:
+			or_node[meta] = if_node[meta]
+	return or_node
+
+
+def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None, if_implication_context=None):
 	changed_any = False
+	# Inside an 'allow'-like trigger block a conditional is rewritten as an OR implication.
+	in_if_implication = bool(if_implication_context) or str(parent_key or '') in IF_IMPLICATION_CONTAINERS
 	# Scopes an enclosing conjunctive list already asserts exist ('exists = X',
 	# 'X? = { ... }'). A negation may only be pushed into a scope block when the scope
 	# is known to be there, otherwise the block has to keep its own existence check.
@@ -1375,6 +1434,26 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 		node_list = new_list
 
+	# --- TRIGGER CONDITIONAL IN 'allow' ---
+	# In a trigger list 'if = { limit = L body }' means 'L implies body', i.e.
+	# 'OR = { NOT = { L } body }'. Inside 'allow' blocks the flat OR form is what the
+	# script conversion writes, so such conditionals are rewritten there (and only there
+	# for now - see IF_IMPLICATION_CONTAINERS). Conditional chains with 'else'/'else_if'
+	# cannot be expressed as one OR and keep their form.
+	if in_if_implication:
+		for idx in range(len(node_list)):
+			node = node_list[idx]
+			if node.get('type') != 'node' or node.get('key') != 'if' or node.get('op') != '=':
+				continue
+			if _has_following_else(node_list, idx):
+				continue
+			or_node = _if_implication_node(node)
+			if or_node is None:
+				continue
+			node_list[idx] = or_node
+			changed_any = True
+			print("Rewrote trigger if into OR implication", file=sys.stderr)
+
 	# --- OR NEGATION FOLD ---
 	# 'OR = { NOT = { exists = X }  X = { NOT = { C.. } } }' says 'not(exists X) OR
 	# (X exists AND not C..)', which is exactly 'not(X exists AND C..)' - so the whole OR
@@ -1579,7 +1658,8 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					# In trigger scope 'if = { limit = L body }' means 'L implies body', which
 					# 'scope? = { body }' (exists AND body) does not express - and in an unknown
 					# scope we cannot tell trigger from effect. So never fold such conditionals;
-					# leave them exactly as they are.
+					# leave them exactly as they are. (Inside 'allow' blocks they were already
+					# rewritten as an OR implication above.)
 					i += 1
 					continue
 				if_children = node.get('val')
@@ -1778,7 +1858,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				continue
 			else:
 				child_context = _scope_context_for_key(key, scope_context)
-				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context, guaranteed_scopes=guaranteed)
+				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context, guaranteed_scopes=guaranteed, if_implication_context=in_if_implication)
 			if child_changed:
 				node['val'] = optimized_children; changed_any = True
 
