@@ -1,0 +1,33 @@
+# Files that must not be packed into the .vsix. vsce only honours this file
+# (not .gitignore), so anything not listed here ships with the extension.
+# Keep only: bin/logic_optimizer.py, out/, syntaxes/, language-configuration.json,
+# icon.png, README.md, LICENSE.md and package.json.
+
+# Dev / editor settings and version-control metadata
+.vscode/**
+.git/**
+.gitignore
+.gitattributes
+.vscodeignore
+
+# Build tooling and dependencies (the compiled main is out/extension.js)
+node_modules/**
+src/**
+tsconfig.json
+tslint.json
+jsconfig.json
+package-lock.json
+
+# Tests and their fixtures
+test/**
+
+# Python byte-code caches
+**/__pycache__/**
+**/*.pyc
+
+# Packaging artefacts
+*.vsix
+.vsixmanifest
+
+# AI / internal notes not meant for end users
+GEMINI.md
