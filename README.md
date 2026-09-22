@@ -40,6 +40,9 @@ Unlike other formatters that delete code context, this formatter treats your cod
 Allows formatting of just a specific block of code without touching the rest of the file.
 
   * **Shortcut:** `Ctrl + K`, `Ctrl + F` (or `Cmd + K`, `Cmd + F` on Mac)
+  * A selection keeps its own base indentation (taken from the first selected line) and its blank lines, so formatting an event's `trigger = { ... }` block in place leaves the rest of the file untouched.
+  * Unlike Format Document, selection formatting only re-indents and normalises spacing - the logic conversions (`scope?` folding, `if` → `OR`, NOR repair) run on whole documents only.
+  * Regression test: `node test/extension_range_formatter.test.js`
 
 ### 4. Advanced Logic Optimization (NAND)
 The extension can now recognize and simplify complex logical expressions, such as nested `NAND` blocks, into a more readable and efficient format. This is particularly useful for complex AI logic or event scripting.

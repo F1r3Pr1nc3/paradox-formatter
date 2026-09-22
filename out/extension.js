@@ -159,6 +159,35 @@ class ParadoxDocumentFormatter {
 		return text;
 	}
 
+	// Starting indentation for a selection: take it from the selection's own first line.
+	// Counting braces over the whole preceding document cannot see '@[ ... ]' / '[[ ... ]]'
+	// blocks or values that span lines, so that count drifts and every following line was
+	// shifted - which collapsed the indentation of blocks like an event's 'trigger = {...}'.
+	baseIndentLevel(document, range, options) {
+		const tabWidth = (options && options.tabSize) ? options.tabSize : 4;
+		const lastLine = Math.min(range.end.line, document.lineCount - 1);
+		for (let i = range.start.line; i <= lastLine; i++) {
+			const raw = document.lineAt(i).text;
+			if (raw.trim().length === 0) {
+				continue;
+			}
+			const indentText = raw.slice(0, raw.length - raw.trimStart().length);
+			const tabs = (indentText.match(/\t/g) || []).length;
+			const spaces = indentText.replace(/\t/g, '').length;
+			let level = tabs + Math.round(spaces / tabWidth);
+			if (raw.trimStart().startsWith('}')) {
+				level += 1; // the line closes its own level
+			}
+			return Math.max(0, level);
+		}
+		return 0;
+	}
+
+	// Braces inside '@[ ... ]' and '[[ ... ]]' hold text, not script structure.
+	rawBraceClean(line) {
+		return line.replace(/@\[[^\]]*\]|\[\[[^\]]*\]\]/g, '');
+	}
+
 	// This is the JS formatter for range (selection) formatting
 	formatRange(document, range, options) {
 		// Expand range to cover full lines to ensure correct indentation context
@@ -198,35 +227,24 @@ class ParadoxDocumentFormatter {
 			});
 		}
 
-		// C. Split into lines for indentation
-		let lines = expandedText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+		// C. Split into lines for indentation. Empty lines belong to the selection and are
+		// kept - dropping them (as this did before) removes the author's blank lines.
+		let lines = expandedText.split('\n').map(l => l.trim());
 
-		// D. Calculate Starting Indentation (Context Awareness)
-		// We look at the lines BEFORE the selection to know the current indentation level
-		let level = 0;
-		if (range.start.line > 0) {
-			let tempL = 0;
-			while (tempL < range.start.line) {
-				const line = document.lineAt(tempL);
-				if (!line.isEmptyOrWhitespace) {
-					// Remove strings and comments to avoid counting braces inside them
-					// Regex matches: ("string") OR (# comment)
-					const cleanLine = line.text.replace(/("(?:\\.|[^"\\])*")|(#.*)/g, '');
-
-					const open = (cleanLine.match(/\{/g) || []).length;
-					const close = (cleanLine.match(/\}/g) || []).length;
-					level += open - close;
-				}
-				tempL++;
-			}
-			level = Math.max(0, level);
-		}
+		// D. Starting Indentation: from the selection's own first line, see baseIndentLevel().
+		let level = this.baseIndentLevel(document, range, options);
 
 		// E. Build the final formatted result
 		const resultLines = [];
 
 		for (let i = 0; i < lines.length; i++) {
 			let line = lines[i];
+
+			if (line.length === 0) {
+				// Blank line: emit it untouched, it carries no indentation and no nesting.
+				resultLines.push('');
+				continue;
+			}
 
 			// Logic: If line starts with }, decrement indent immediately
 			if (line.startsWith('}')) {
@@ -241,8 +259,9 @@ class ParadoxDocumentFormatter {
 			resultLines.push(indentString + restoredLine);
 
 			// Logic: Calculate indent for NEXT line
-			const open = (line.match(/\{/g) || []).length;
-			const close = (line.match(/\}/g) || []).length;
+			const countedLine = this.rawBraceClean(line);
+			const open = (countedLine.match(/\{/g) || []).length;
+			const close = (countedLine.match(/\}/g) || []).length;
 
 			if (line.startsWith('}')) {
 				level += open - (close - 1);
