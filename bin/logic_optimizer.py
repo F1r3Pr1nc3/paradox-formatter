@@ -143,9 +143,9 @@ ALWAYS_PRESENT_SCOPES = ('root', 'this')
 # Containers whose children are ORed: a guard inside them does not cover its siblings.
 GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'calc_true_if')
 # Trigger containers whose 'if = { limit = L body }' conditionals are rewritten as the
-# equivalent 'OR = { NOT = { L } body }' (L implies body). 'allow' is the block the
-# script conversion targets - extend the tuple to cover more trigger containers.
-IF_IMPLICATION_CONTAINERS = ('allow',)
+# equivalent 'OR = { NOT = { L } body }' (L implies body). All four are trigger blocks, so
+# the rewrite can never touch an effect-side conditional.
+IF_IMPLICATION_CONTAINERS = ('allow', 'potential', 'destroy_trigger', 'trigger')
 # Containers that hold effects only: inside them 'if = { limit = L body }' can be folded
 # into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
 # same conditional means 'L implies body' and has to become an OR instead.
@@ -1434,13 +1434,13 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 		node_list = new_list
 
-	# --- TRIGGER CONDITIONAL IN 'allow' ---
+	# --- TRIGGER CONDITIONAL IN A TRIGGER BLOCK ---
 	# In a trigger list 'if = { limit = L body }' means 'L implies body', i.e.
-	# 'OR = { NOT = { L } body }'. Inside 'allow' blocks the flat OR form is what the
-	# script conversion writes, so such conditionals are rewritten there (and only there
-	# for now - see IF_IMPLICATION_CONTAINERS). Conditional chains with 'else'/'else_if'
-	# cannot be expressed as one OR and keep their form.
-	if in_if_implication:
+	# 'OR = { NOT = { L } body }', which is the form the script conversion writes for
+	# 'allow', 'potential', 'destroy_trigger' and 'trigger' blocks (IF_IMPLICATION_CONTAINERS).
+	# Conditional chains with 'else'/'else_if' cannot be expressed as one OR and keep their
+	# form; effect-side conditionals are never touched (they are not trigger context).
+	if in_if_implication and scope_context == 'trigger':
 		for idx in range(len(node_list)):
 			node = node_list[idx]
 			if node.get('type') != 'node' or node.get('key') != 'if' or node.get('op') != '=':
