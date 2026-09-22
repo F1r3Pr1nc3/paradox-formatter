@@ -3222,6 +3222,11 @@ def should_be_compact(node):
 		if isinstance(val, list):
 			if ckey in not_compact_nodes:
 				return False
+			# A block child that carries a comment cannot be inlined: the comment would end
+			# up mid-line (and the renderer would then have to abort and emit the block
+			# unindented). Keep such blocks multi-line, mirroring the leaf rule below.
+			if child.get('_cm_close') or child.get('_cm_inline'):
+				return False
 			if not should_be_compact(child): return False
 			k_len = len(ckey)
 			v_len = len(str(val))
@@ -3366,7 +3371,8 @@ def node_to_string(node, depth=0, be_compact=False):
 			if is_compactable:
 				joined_children = " ".join(child_strs)
 				val_key_str = f"{val_key} " if val_key else ""
-				return f"{indent}{key} {op} {val_key_str}{{ {joined_children} }}{cm_close}"
+				inner = (" " + joined_children) if joined_children else ""
+				return f"{indent}{key} {op} {val_key_str}{{{inner} }}{cm_close}"
 
 		# Not compact
 		val_key_str = f"{val_key} " if val_key else ""

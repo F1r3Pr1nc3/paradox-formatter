@@ -131,6 +131,28 @@ OR_CASE = ('e = {\n\ttrigger = {\n\t\tOR = {\n\t\t\tfrom = { is_primitive = no }
 out = run(OR_CASE)
 check('OR with a common scope still hoists it', out.count('from = {') == 1, out)
 
+# --- a collapsed scope block with a comment on the closing brace must re-indent ---------
+# The exact shape reported for crisis.2610: 'NOT = { solar_system? = {' with the body
+# written at column 0 and the inner block's '} # comment'. The compactor used to try to
+# inline 'NOT = { solar_system? = { ... } }' and, meeting the comment, abort halfway and
+# leave the block unindented. It now keeps such blocks multi-line and the indentation
+# returns, on every pass.
+COLLAPSED = ('starbase_event = {\n'
+	'\tid = crisis.2610\n'
+	'\ttrigger = {\n'
+	'\t\tfrom.owner = { is_country_type = ai_empire }\n'
+	'\t\tNOT = { solar_system? = {\n'
+	'any_system_planet_colony = {\n'
+	'} # For populated systems, they need to invade first\n'
+	'} }\n'
+	'\t}\n'
+	'}\n')
+out = run(COLLAPSED)
+issues = optimizer.check_indentation(out)
+check('collapsed comment block is re-indented', not issues, out)
+check('collapsed comment block keeps its comment once', out.count('For populated systems') == 1, out)
+check('collapsed comment block is stable', run(out) == out, out)
+
 print('=' * 60)
 print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))
 sys.exit(1 if failed else 0)
