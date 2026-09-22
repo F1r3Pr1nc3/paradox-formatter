@@ -114,6 +114,23 @@ fixed = run(COLLAPSED)
 check('collapsed switch body is repaired', not optimizer.check_indentation(fixed), fixed)
 check('repaired switch body is stable', run(fixed) == fixed, fixed)
 
+# --- hoisting a common scope out of NAND/NOR needs the scope to exist -------------------
+NAND_CASE = ('e = {\n\ttrigger = {\n\t\tNAND = {\n\t\t\tfrom = { is_primitive = no }\n'
+	'\t\t\tfrom = { is_fallen_empire = no }\n\t\t}\n\t}\n}\n')
+out = run(NAND_CASE)
+check('NAND with a common scope and no guard keeps its NAND', 'NAND = {' in out, out)
+check('NAND case is stable', run(out) == out, out)
+
+GUARDED_NAND = ('e = {\n\ttrigger = {\n\t\texists = from\n\t\tNAND = {\n\t\t\tfrom = { is_primitive = no }\n'
+	'\t\t\tfrom = { is_fallen_empire = no }\n\t\t}\n\t}\n}\n')
+out = run(GUARDED_NAND)
+check('NAND with a guard may hoist the common scope', ('from = {' in out or 'from? = {' in out) and 'NAND = {' in out, out)
+
+OR_CASE = ('e = {\n\ttrigger = {\n\t\tOR = {\n\t\t\tfrom = { is_primitive = no }\n'
+	'\t\t\tfrom = { is_fallen_empire = no }\n\t\t}\n\t}\n}\n')
+out = run(OR_CASE)
+check('OR with a common scope still hoists it', out.count('from = {') == 1, out)
+
 print('=' * 60)
 print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))
 sys.exit(1 if failed else 0)

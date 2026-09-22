@@ -2357,7 +2357,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					first_key = children_nodes[0].get('key', '')
 					first_op = children_nodes[0].get('op', '=')
 					if first_key and SCOPES_RE.match(first_key):
-						if all(c.get('key') == first_key and c.get('op') == first_op and isinstance(c.get('val'), list) for c in children_nodes):
+						# Hoisting a common scope out of AND/OR is 'exists AND ...' either way.
+						# In a NAND/NOR the negation applies to each child, so it is only the same
+						# expression while the scope exists:
+						#   not(X exists and a) and not(X exists and b)  !=  X exists and not(a or b)
+						if (all(c.get('key') == first_key and c.get('op') == first_op and isinstance(c.get('val'), list) for c in children_nodes)
+								and (key in ('AND', 'OR') or _scope_is_guaranteed(first_key, guaranteed))):
 							new_logic_children = []
 							for child in node['val']:
 								if child['type'] == 'comment':
