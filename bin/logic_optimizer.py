@@ -16,13 +16,21 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.5.7"
+__version__ = "0.5.8"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
 CAN_MERGE_SCOPES = False # Dev option to allow merging of scopes like owner, system, etc. (with some safeguards) TODO: restrict more
 NO_COMPACT = False
-USE_SAFE_NAVIGATION = False # v4.4:
+USE_SAFE_NAVIGATION = False # v4.4: legacy flag, True = fold, False = revert
+# Explicit safe navigation mode chosen by the driver:
+#   'auto'   - mirror the file's own style (fold files that already use safe navigation)
+#   'fold'   - always create 'scope? = { ... }'
+#   'revert' - always expand 'scope? = { ... }' back to exists/if form
+#   'ignore' - never touch safe navigation in either direction
+# None keeps the legacy behaviour driven by USE_SAFE_NAVIGATION.
+SAFE_NAVIGATION_MODE = None
+_ACTIVE_SAFE_NAV = 'fold' # resolved per document in process_text()
 
 def configure_for_stellaris_version(version_nr):
 	"""
@@ -38,6 +46,7 @@ def configure_for_stellaris_version(version_nr):
 	    logic_optimizer.configure_for_stellaris_version('4.5')   # enables safe nav
 	    logic_optimizer.configure_for_stellaris_version(4.5)     # same, float
 	    logic_optimizer.configure_for_stellaris_version('3.12')  # disables safe nav
+	    An explicit SAFE_NAVIGATION_MODE (or --safe-navigation) takes precedence over this flag.
 	"""
 	global USE_SAFE_NAVIGATION
 	try:
@@ -868,51 +877,29 @@ def _scope_context_for_key(key, inherited):
 	return inherited
 
 
-def _has_following_else(node_list, idx):
-	for nxt in node_list[idx + 1:]:
-		if nxt.get('type') == 'comment':
-			continue
-		return str(nxt.get('key', '')) in ('else', 'else_if')
+def _tree_has_safe_nav(nodes):
+	"""True if the tree already uses the 4.4+ 'scope? = { ... }' syntax."""
+	for node in nodes:
+		if node.get('type') == 'node' and _is_safe_nav_key(node.get('key', '')):
+			return True
+		if isinstance(node.get('val'), list) and _tree_has_safe_nav(node['val']):
+			return True
 	return False
 
 
-def _if_implication_node(if_node):
-	"""Rewrite a trigger conditional 'if = { limit = L body }' as 'OR = { !L body }'.
-	Returns None if it cannot be expressed as an OR (comments, empty limit or body)."""
-	children = if_node.get('val')
-	if not isinstance(children, list):
-		return None
-	limit_node = None
-	body_nodes = []
-	for child in children:
-		if child.get('type') != 'node':
-			return None
-		if child.get('key') == 'limit' and isinstance(child.get('val'), list):
-			limit_node = child
-		else:
-			body_nodes.append(child)
-	if limit_node is None or not body_nodes:
-		return None
-	limit_nodes = []
-	for child in limit_node.get('val', []):
-		if child.get('type') != 'node':
-			return None
-		limit_nodes.append(child)
-	if not limit_nodes:
-		return None
-	if len(limit_nodes) == 1:
-		neg_limit = {'key': 'NOT', 'op': '=', 'val': [limit_nodes[0]], 'type': 'node'}
-	else:
-		neg_limit = {'key': 'NAND', 'op': '=', 'val': limit_nodes, 'type': 'node'}
-	if len(body_nodes) == 1:
-		body = body_nodes[0]
-	else:
-		body = {'key': 'AND', 'op': '=', 'val': body_nodes, 'type': 'node'}
-	or_node = {'key': 'OR', 'op': '=', 'val': [neg_limit, body], 'type': 'node'}
-	for meta in ('_cm_inline', '_cm_open', '_cm_close'):
-		if meta in if_node:
-			or_node[meta] = if_node[meta]
-	return or_node
+def _resolve_safe_navigation_mode(tree):
+	"""Which safe navigation pass to run for this document: 'fold', 'revert' or 'ignore'."""
+	mode = SAFE_NAVIGATION_MODE
+	if mode is None:
+		# Nothing configured explicitly: keep the historic behaviour driven by
+		# configure_for_stellaris_version() / the legacy --use-safe-navigation flag.
+		return 'fold' if USE_SAFE_NAVIGATION else 'revert'
+	if mode == 'auto':
+		# Mirror the file's own style: fold files that already use safe navigation and leave
+		# the rest untouched (there is nothing to revert in a pre-4.4 file anyway).
+		return 'fold' if _tree_has_safe_nav(tree) else 'ignore'
+	return mode
+
 
 def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 	changed_any = False
@@ -1217,7 +1204,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 	# temporary OR wrapper built while merging NOR blocks - the two nodes are ORed, so
 	# folding them into 'scope?' would turn 'exists OR scope' into 'exists AND scope'.
 	# 'calc_true_if' counts its entries.
-	if USE_SAFE_NAVIGATION and parent_key not in ('OR', 'NOR', 'NOT', 'calc_true_if'):
+	if _ACTIVE_SAFE_NAV == 'fold' and parent_key not in ('OR', 'NOR', 'NOT', 'calc_true_if'):
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
@@ -1291,16 +1278,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 			elif node['type'] == 'node' and node.get('key') == 'if' and node.get('op') == '=':
 				if scope_context != 'effect':
 					# In trigger scope 'if = { limit = L body }' means 'L implies body', which
-					# 'scope? = { body }' (exists AND body) does not express - rewrite it as an OR.
-					# In an unknown scope (custom keys, file roots) we cannot tell trigger from
-					# effect, so leave the conditional alone instead of making it invalid.
-					if scope_context == 'trigger' and not _has_following_else(node_list, i):
-						or_node = _if_implication_node(node)
-						if or_node is not None:
-							node_list[i:i+1] = [or_node]
-							changed_any = True
-							print("Rewrote trigger if into OR implication", file=sys.stderr)
-							continue
+					# 'scope? = { body }' (exists AND body) does not express - and in an unknown
+					# scope we cannot tell trigger from effect. So never fold such conditionals;
+					# leave them exactly as they are.
 					i += 1
 					continue
 				if_children = node.get('val')
@@ -1391,7 +1371,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 			i += 1
 
 	# --- SAFE NAVIGATION REVERT (? -> exists) ---
-	elif not USE_SAFE_NAVIGATION:
+	elif _ACTIVE_SAFE_NAV == 'revert':
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
@@ -1401,11 +1381,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None):
 				if not target_name:
 					i += 1; continue
 
-				# Determine if parent context supports IF blocks (non-trigger scope)
-				is_trigger_context = bool(parent_key) and (
-					parent_key in TRIGGER_CONTEXT_SCOPES
-					or re.match(r'^(any_|count_)', str(parent_key)) is not None
-				)
+				# 'scope? = { ... }' is 4.4+ syntax. The 'if = { limit = { exists = scope } ... }'
+				# wrapper is only emitted when we are sure we are in an effect scope; everywhere else
+				# (trigger scope, scopes nested in a trigger block such as 'trigger = { from = { ... } }',
+				# and unknown/custom scopes) revert to the flat 'exists = scope' + 'scope = { ... }' pair,
+				# because a conditional in a trigger means 'implied by the limit', not 'and'.
+				is_trigger_context = (scope_context != 'effect')
 				exists_node = {'key': 'exists', 'op': '=', 'val': target_name, 'type': 'node'}
 				scope_node = {k: v for k, v in node.items() if k not in ('_fp',)}
 				# The parser stores leading comments twice (standalone comment nodes AND
@@ -2867,12 +2848,14 @@ def block_to_string(block_list):
 
 # --- 9. Main ---
 def process_text(content):
+	global _ACTIVE_SAFE_NAV
 	original_content = content
 	try:
 		content = content.replace('\r\n', '\n')
 		tokens = tokenize(content)
 		tree = parse(tokens, content)
 
+		_ACTIVE_SAFE_NAV = _resolve_safe_navigation_mode(tree)
 		keys_lowercased = lowercase_keys(tree)
 		keys_uppercased = uppercase_keys(tree)
 		yes_no_lowercased = lowercase_yes_no_values(tree)
@@ -2913,11 +2896,15 @@ if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--no-compact", action="store_true", help="Disable compacting of nodes")
-	parser.add_argument("--use-safe-navigation", action="store_true", help="Convert exists = scope checks to scope? = safe navigation")
+	parser.add_argument("--safe-navigation", choices=('auto', 'fold', 'revert', 'ignore'), default=None,
+						help="Safe navigation handling: auto (mirror the file's style), fold, revert or ignore")
+	parser.add_argument("--use-safe-navigation", action="store_true", help="Legacy alias for --safe-navigation fold")
 	args, unknown = parser.parse_known_args()
 
 	NO_COMPACT = args.no_compact
-	USE_SAFE_NAVIGATION = args.use_safe_navigation
+	SAFE_NAVIGATION_MODE = args.safe_navigation
+	if SAFE_NAVIGATION_MODE is None and args.use_safe_navigation:
+		USE_SAFE_NAVIGATION = True
 
 	stdin_content = sys.stdin.read()
 	new_content, changed = process_text(stdin_content)

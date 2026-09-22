@@ -1,6 +1,6 @@
 # Paradox Script Formatter for VS Code
 
-![Version](https://img.shields.io/badge/version-0.5.7-blue.svg)
+![Version](https://img.shields.io/badge/version-0.5.8-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 A robust, whitespace-aware formatter for Paradox Interactive game scripts (Stellaris, HOI4, EU4, CK3).
@@ -99,7 +99,28 @@ limit = {
 You can trigger a bulk formatting operation across all open files or the entire workspace using the `PDX Formatter: Format all files` command.
 
 ### 6. Safe Navigation Support (Stellaris v4.4+)
-Enable or disable safe navigation logic (default: false). When enabled, the formatter converts `exists = xyz` **immediately** followed by `xyz = ...` (only comment lines may sit in between) into the safe navigation syntax `xyz? = ...` (Stellaris v4.4+). If other conditions sit between the two nodes, the `exists = xyz` check also guards them, so it is preserved. The scope-less guard `has_owner = yes` is folded the same way, but only into a directly following `owner` or `space_owner` block, and only in conjunctive lists (never inside `OR`/`NOR`/`NOT`/`calc_true_if`). A redundant `exists = xyz` directly in front of an existing `xyz? = { ... }` is removed, and a `xyz?` node is never negated (it means `exists AND ...`, so flipping only its inner value would change the logic). Trigger-side conditionals are handled separately: `if = { limit = L body }` means `L implies body` there, so it is rewritten into the equivalent `OR = { !L body }` instead of `xyz? = { body }`; in unknown scopes (custom keys, file roots) such conditionals are left untouched.
+Enable or disable the four handling modes for the Stellaris **v4.4+ safe navigation** syntax (`xyz? = { ... }`) with the `paradox-formatter.safeNavigation` setting:
+
+| Mode | Behaviour |
+| --- | --- |
+| `auto` (default) | Mirror the file's own style: files that already use safe navigation get their `exists = xyz` + `xyz = { ... }` pairs folded into `xyz? = { ... }`; files without it are left untouched. |
+| `fold` | Always create safe navigation: `exists = xyz` **immediately** followed by `xyz = { ... }` (only comments may sit in between) becomes `xyz? = { ... }`; the scope-less `has_owner = yes` guard is folded the same way into a directly following `owner`/`space_owner` block. Targets Stellaris v4.4+. |
+| `revert` | Always expand safe navigation back to `exists = xyz` + `xyz = { ... }`; inside known effect scopes the pair is wrapped in `if = { limit = { exists = xyz } ... }`. Targets pre-4.4 Stellaris. |
+| `ignore` | Never touch safe navigation - neither fold nor revert. |
+
+```jsonc
+// .vscode/settings.json
+{
+    "paradox-formatter.safeNavigation": "fold"   // "auto" | "fold" | "revert" | "ignore"
+}
+```
+
+Notes:
+
+* Folding only happens in conjunctive lists (never inside `OR`/`NOR`/`NOT`/`calc_true_if`) and only when the scope block directly follows the guard; a redundant `exists = xyz` in front of an existing `xyz? = { ... }` is removed.
+* A `xyz? = { ... }` node is never negated (`exists AND ...` cannot be negated by flipping only its inner value), and trigger-side conditionals (`if = { limit = L body }`, i.e. `L implies body`) are never converted.
+* When reverting, the `if = { limit = { exists = xyz } xyz = { ... } }` wrapper is only written inside known effect scopes; everywhere else the flat `exists = xyz` + `xyz = { ... }` pair is used.
+* **Migration:** the old boolean `paradox-formatter.useSafeNavigation` option was replaced by this setting - `useSafeNavigation: true` corresponds to `safeNavigation: "fold"`.
 
 -----
 
@@ -109,17 +130,17 @@ Enable or disable safe navigation logic (default: false). When enabled, the form
 
 You can install the packaged extension directly using the `.vsix` file.
 
-1.  **Download** the `paradox-script-formatter-0.5.7.vsix` file.
+1.  **Download** the `paradox-script-formatter-0.5.8.vsix` file.
 2.  Open **VS Code**.
 3.  Go to the **Extensions View** (`Ctrl+Shift+X`).
 4.  Click the **three dots icon (...)** at the top-right of the Extensions menu.
 5.  Select **"Install from VSIX..."**.
-6.  Locate and select the `paradox-script-formatter-0.5.7.vsix` file.
+6.  Locate and select the `paradox-script-formatter-0.5.8.vsix` file.
 
 Alternatively, you can install it via the command line:
 
 ```bash
-code --install-extension paradox-script-formatter-0.5.7.vsix
+code --install-extension paradox-script-formatter-0.5.8.vsix
 ```
 
 ### Supported File Types

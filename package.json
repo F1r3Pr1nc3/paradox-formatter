@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.5.7",
+    "version": "0.5.8",
     "preview": true,
     "repository": {
         "type": "git",
@@ -41,10 +41,22 @@
                     "default": false,
                     "description": "Enable formatting when pasting or formatting selection."
                 },
-                "paradox-formatter.useSafeNavigation": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Convert \"exists = xyz\" immediately followed by \"xyz = ...\" (comments may sit in between) into safe navigation \"xyz? = ...\" (Stellaris v4.4+). Also folds the scope-less has_owner = yes guard into a directly following owner/space_owner block."
+                "paradox-formatter.safeNavigation": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "fold",
+                        "revert",
+                        "ignore"
+                    ],
+                    "enumDescriptions": [
+                        "Mirror the file's own style: fold exists + scope pairs into scope? when the file already uses safe navigation, otherwise leave the file untouched.",
+                        "Always create safe navigation (scope? = { ... }) - for Stellaris v4.4+ targets.",
+                        "Always revert safe navigation (scope? = { ... }) back to the exists / if form - for pre-4.4 Stellaris.",
+                        "Never touch safe navigation in either direction."
+                    ],
+                    "default": "auto",
+                    "description": "How the formatter handles the Stellaris v4.4+ safe navigation syntax (scope? = { ... })."
                 }
             }
         },

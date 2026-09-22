@@ -39,9 +39,8 @@ function formatWithPythonBridge(text, forceCompact) {
 			args.push('--no-compact');
 		}
 
-		if (config.get('useSafeNavigation')) {
-			args.push('--use-safe-navigation');
-		}
+		const safeNavigationMode = config.get('safeNavigation') || 'auto';
+		args.push('--safe-navigation', String(safeNavigationMode));
 
 		// 1. Spawn Python process
 		const pythonProcess = spawn(pythonPath, args);
