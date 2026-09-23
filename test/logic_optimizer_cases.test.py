@@ -184,6 +184,16 @@ check('fold: a = no leaf in between keeps the guard', 'from? = {' not in out and
 out = run(_fold_distance(['NOT = { is_ai = yes }']))
 check('fold: a NOT block in between keeps the guard', 'from? = {' not in out and 'exists = from' in out, out)
 
+# --- reverting safe navigation must keep a comment sitting next to the scope block --------
+# 'NOT = { # comment scope? = { ... } }' reverts to 'exists = scope' + 'scope = { ... }', and
+# the NOT->NAND (NOT-AND) simplification must not drop the comment that sat next to the AND.
+FOLDED_COMMENT = ('e = {\n\ttrigger = {\n\t\tfrom = {\n\t\t\tNOT = {\n'
+	'\t\t\t\t# technically redundant\n'
+	'\t\t\t\tspace_owner? = { is_same_value = root.fromfrom.space_owner }\n'
+	'\t\t\t}\n\t\t}\n\t}\n}\n')
+out = run(FOLDED_COMMENT, 'revert')
+check('revert keeps the comment next to the scope block', 'technically redundant' in out, out)
+
 print('=' * 60)
 print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))
 sys.exit(1 if failed else 0)

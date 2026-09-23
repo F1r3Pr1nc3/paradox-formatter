@@ -2668,7 +2668,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							changed_any = True
 						elif child.get('key') == 'AND' and isinstance(child.get('val'), list):
 							node['key'] = 'NAND'
-							node['val'] = child['val']
+							node['val'] = [c for c in node['val'] if c.get('type') == 'comment'] + child['val']
 							changed_any = True
 							print("Created NAND from NOT-AND", file=sys.stderr)
 							key = 'NAND'
@@ -2694,7 +2694,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 							node['key'] = 'AND'
 							node['op'] = '='
-							node['val'] = child['val']
+							node['val'] = [c for c in node['val'] if c.get('type') == 'comment'] + child['val']
 
 							if cm_open or child_cm_open:
 								node['_cm_open'] = (cm_open + ' ' + child_cm_open).strip()
@@ -2708,7 +2708,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						# NOR <=> NOT = { OR ... }
 						elif child.get('key') == 'OR' and isinstance(child.get('val'), list):
 							node['key'] = 'NOR'
-							node['val'] = child['val']
+							node['val'] = [c for c in node['val'] if c.get('type') == 'comment'] + child['val']
 							changed_any = True
 							print("Created NOR from NOT-OR", file=sys.stderr)
 							key = 'NOR'
