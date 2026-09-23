@@ -194,6 +194,27 @@ FOLDED_COMMENT = ('e = {\n\ttrigger = {\n\t\tfrom = {\n\t\t\tNOT = {\n'
 out = run(FOLDED_COMMENT, 'revert')
 check('revert keeps the comment next to the scope block', 'technically redundant' in out, out)
 
+# --- a NOR holding a scope block + a leaf folds the leaf out, then safe-navigation ----------
+# 'exists = owner' + 'NOR = { owner = { OR = { a b c } }, has_carrier_flag }' must become
+# 'owner? = { NOR = { a b c } }' + 'NOT = { has_carrier_flag }' (the leaf is lifted out of the
+# NOR as its own NOT, so the NOR collapses onto the scope block and the fold can fire).
+NOR_LEAF = ('e = {\n\ttrigger = {\n\t\texists = owner\n'
+	'\t\tNOR = {\n'
+	'\t\t\towner = { OR = { is_ai = yes is_guided_sapience_empire = yes is_wilderness_empire = yes } }\n'
+	'\t\t\thas_carrier_flag = unethical_presapient_experiments\n'
+	'\t\t}\n\t}\n}\n')
+out = run(NOR_LEAF, 'fold')
+check('NOR scope + leaf folds the leaf out and applies safe navigation',
+	'owner? = {' in out and 'NOT = { has_carrier_flag = unethical_presapient_experiments }' in out, out)
+check('NOR scope + leaf keeps the leaves inside the scope as a NOR',
+	'owner? = {\n\t\t\tNOR = {\n\t\t\t\tis_ai = yes' in out or ('NOR = {' in out and 'is_ai = yes' in out), out)
+check('NOR scope + leaf is stable', run(out, 'fold') == out, out)
+
+# a plain NOR with no scope block must stay untouched (no safe navigation applied)
+PLAIN_NOR = ('e = {\n\ttrigger = {\n\t\tNOR = { a = x b = y }\n\t}\n}\n')
+out = run(PLAIN_NOR, 'fold')
+check('plain NOR with no scope block stays untouched', 'NOR = {' in out and '? = {' not in out, out)
+
 print('=' * 60)
 print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))
 sys.exit(1 if failed else 0)

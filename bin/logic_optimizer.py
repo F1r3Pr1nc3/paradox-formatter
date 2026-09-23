@@ -957,6 +957,24 @@ def _negated_scope_block(node, guard_scopes):
 	return scope_name, inner, inner.get('val', [])
 
 
+def _nor_scope_block_with_leaves(node, guard_scopes):
+	"""Recognise 'NOR = { scope = { C }, leaf1, leaf2, ... }' - a scope block sitting next
+	to plain leaves. The scope block can be folded into 'scope? = { ... }' once the leaves
+	are lifted out, so return the scope block and its sibling leaves."""
+	if str(node.get('key', '')) != 'NOR' or not isinstance(node.get('val'), list):
+		return None
+	node_children = [c for c in node['val'] if c.get('type') == 'node']
+	scope_children = [c for c in node_children
+		if isinstance(c.get('val'), list) and str(c.get('key', '')) in guard_scopes]
+	if len(scope_children) != 1:
+		return None
+	scope = scope_children[0]
+	others = [c for c in node_children if c is not scope]
+	if not others:
+		return None
+	return str(scope.get('key', '')), scope, scope.get('val', []), others
+
+
 def _uses_scope_as_value(nodes, scope_name):
 	"""True when a node dereferences the scope, e.g. 'is_owned_by = from'.
 
@@ -1782,6 +1800,8 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				safe_nav_name = ''
 				safe_nav_node = None
 				safe_nav_block = None
+				nor_leaves_idx = -1
+				nor_leaves_data = None
 				j = i + 1
 				skipped = 0  # at most three plain, positive leaves may sit between the guard and its block
 				while j < len(node_list):
@@ -1811,6 +1831,15 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							negated_name, negated_inner, negated_children = neg
 							negated_idx = j
 							negated_node = cand
+							break
+					if is_block and cand_key == 'NOR':
+						# 'exists = x' + 'NOR = { x = { C }, f1, f2, ... }' is 'x exists AND
+						# not(C) AND not(f1) AND not(f2) ...', i.e. 'x? = { not(C) }' plus one
+						# 'NOT = { f }' per leaf. Detected here, folded below.
+						nor_leaves = _nor_scope_block_with_leaves(cand, guard_scopes)
+						if nor_leaves is not None:
+							nor_leaves_idx = j
+							nor_leaves_data = nor_leaves
 							break
 					if is_block and cand_key == 'NOT':
 						# 'exists = x' + 'NOT = { x? = { C.. } }': the guard and the safe
@@ -1872,6 +1901,40 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						changed_any = True
 						print(f"Applied safe navigation (negated scope): {negated_name}?", file=sys.stderr)
 						continue
+
+				if nor_leaves_idx != -1:
+					scope_name, scope_block, scope_children, other_leaves = nor_leaves_data
+					nor_node = node_list[nor_leaves_idx]
+					orig_val = nor_node.get('val', [])
+					inner_nodes = [c for c in scope_children if c.get('type') == 'node']
+					neg_node = {'key': 'NOT' if len(inner_nodes) == 1 else 'NAND', 'op': '=', 'val': scope_children, 'type': 'node'}
+					for meta in ('_cm_inline', '_cm_open', '_cm_close'):
+						if meta in scope_block:
+							neg_node[meta] = scope_block[meta]
+					for meta in ('_cm_inline', '_cm_open', '_cm_close'):
+						if meta in nor_node:
+							neg_node[meta] = nor_node.pop(meta) + neg_node.get(meta, '')
+					nor_node['key'] = scope_name + '?'
+					nor_node['op'] = '='
+					nor_node['val'] = [neg_node]
+					cm_inline = node.get('_cm_inline')
+					if cm_inline:
+						nor_node['_cm_inline'] = cm_inline + nor_node.get('_cm_inline', '')
+					# Keep the NOR's other children in place: comments stay, each leaf becomes
+					# its own 'NOT = { leaf }'.
+					replacement = [nor_node]
+					for item in orig_val:
+						if item is scope_block:
+							continue
+						if item.get('type') == 'comment':
+							replacement.append(item)
+						else:
+							replacement.append({'key': 'NOT', 'op': '=', 'val': [copy.deepcopy(item)], 'type': 'node'})
+					node_list[nor_leaves_idx:nor_leaves_idx + 1] = replacement
+					node_list.pop(i)
+					changed_any = True
+					print(f"Folded NOR scope with leaves into safe navigation: {scope_name}?", file=sys.stderr)
+					continue
 
 				if safe_nav_idx != -1:
 					# Reuse the NOT node as the 'x?' node, so the siblings between the guard
