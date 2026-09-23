@@ -162,7 +162,7 @@ check('negated scope block gets no safe navigation', 'from? = {' not in out, out
 check('negated scope block keeps its NOT', 'NOT = { from = { has_origin = origin_unplugged } }' in out, out)
 check('negated scope block is stable', run(out) == out, out)
 
-# --- the safe-navigation fold stays nearby: at most one scope-ignoring sibling in between ---
+# --- the safe-navigation fold stays nearby and between plain, positive leaves -------------
 def _fold_distance(intermediate):
 	parts = ['e = {', '\ttrigger = {', '\t\texists = from']
 	parts += ['\t\t' + c for c in intermediate]
@@ -172,9 +172,17 @@ def _fold_distance(intermediate):
 out = run(_fold_distance([]))
 check('fold: guard directly before the scope block folds', 'from? = {' in out, out)
 out = run(_fold_distance(['has_star_flag = x']))
-check('fold: one scope-ignoring condition in between folds', 'from? = {' in out, out)
-out = run(_fold_distance(['has_star_flag = x', 'has_other_flag = y']))
-check('fold: two conditions in between keep the guard', 'from? = {' not in out and 'exists = from' in out, out)
+check('fold: one leaf in between folds', 'from? = {' in out, out)
+out = run(_fold_distance(['a = x', 'b = y', 'c = z']))
+check('fold: three leaves in between folds', 'from? = {' in out, out)
+out = run(_fold_distance(['a = x', 'b = y', 'c = z', 'd = w']))
+check('fold: four leaves in between keep the guard', 'from? = {' not in out and 'exists = from' in out, out)
+out = run(_fold_distance(['any_planet = { is_ai = yes }']))
+check('fold: a scope block in between keeps the guard', 'from? = {' not in out and 'exists = from' in out, out)
+out = run(_fold_distance(['is_ai = no']))
+check('fold: a = no leaf in between keeps the guard', 'from? = {' not in out and 'exists = from' in out, out)
+out = run(_fold_distance(['NOT = { is_ai = yes }']))
+check('fold: a NOT block in between keeps the guard', 'from? = {' not in out and 'exists = from' in out, out)
 
 print('=' * 60)
 print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))

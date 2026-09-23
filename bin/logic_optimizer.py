@@ -1773,7 +1773,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				safe_nav_node = None
 				safe_nav_block = None
 				j = i + 1
-				skipped = 0  # at most one scope-ignoring sibling may sit between the guard and its block
+				skipped = 0  # at most three plain, positive leaves may sit between the guard and its block
 				while j < len(node_list):
 					cand = node_list[j]
 					if cand['type'] == 'comment':
@@ -1817,11 +1817,17 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					# 'exists = from' / 'is_owned_by = from' / 'from = { ... }' must stay as is.
 					if any(_uses_scope_as_value([cand], name) for name in guard_scopes):
 						break
-					# A sibling that ignores the scope may sit between the guard and its block,
-					# but only one: any further and the guard is no longer clearly nearby, so
-					# leave 'exists = x' + 'x = { ... }' as written.
+					# Only plain, positive leaves may sit between the guard and its block: a scope
+					# block (any 'key = { ... }', including NOT/NOR/NAND) or a negated leaf ('= no')
+					# would change what dropping the guard means, so stop there.
+					if is_block:
+						break
+					if cand.get('op') == '=' and cand.get('val') == 'no':
+						break
+					# Up to three such leaves may sit in between; any further and the guard is no
+					# longer clearly nearby, so leave 'exists = x' + 'x = { ... }' as written.
 					skipped += 1
-					if skipped > 1:
+					if skipped > 3:
 						break
 					j += 1
 
