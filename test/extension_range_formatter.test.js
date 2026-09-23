@@ -106,11 +106,11 @@ const closing = ['a = {', '\tb = {', '\t\tc = yes', '\t}', '}'].join('\n');
 const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 
 (async () => {
-	check('1. an event trigger block keeps its indentation (and converts)', await formatSelection(event, 6, 13),
+	check('1. an event trigger block keeps its indentation', await formatSelection(event, 6, 13),
 		['\ttrigger = {',
 			'\t\tfrom.owner = { is_country_type = ai_empire }',
 			'\t\tNOT = {',
-			'\t\t\tsolar_system? = {',
+			'\t\t\tsolar_system = {',
 			'\t\t\t\tany_system_planet = { is_colony = yes } # For populated systems, they need to invade first',
 			'\t\t\t}',
 			'\t\t}',
@@ -124,7 +124,7 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 			'\ttrigger = {',
 			'\t\tfrom.owner = { is_country_type = ai_empire }',
 			'\t\tNOT = {',
-			'\t\t\tsolar_system? = {',
+			'\t\t\tsolar_system = {',
 			'\t\t\t\tany_system_planet = { is_colony = yes } # For populated systems, they need to invade first',
 			'\t\t\t}',
 			'\t\t}',
@@ -181,7 +181,7 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 		flat(['\t\tswitch = {', '\t\t\tswitch = is_country_type', '\t\t\tnew_type = { is_ai = no }', '\t\t}'].join('\n')));
 
 	// 15: the real crisis.2610 trigger with its inline comments (Vfix notes) must keep
-	// every comment and still fold the scope - this is the case reported twice.
+	// every comment and leave the scope block written without safe navigation.
 	const c2610 = ['starbase_event = {',
 		'\tid = crisis.2610',
 		'\ttrigger = {',
@@ -198,7 +198,7 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 		'}'].join('\n');
 	const c2610Out = await formatSelection(c2610, 2, 12);
 	const expectations = [
-		'solar_system? = {',
+		'solar_system = {',
 		'has_owner = yes # For populated systems, they need to invade first',
 		'NOT = { is_owned_by = from.owner } # Vfix: as said',
 	];
@@ -211,7 +211,7 @@ const fragment = ['trigger = {', '\thas_owner = yes', '}'].join('\n');
 			problems.push('a comment was duplicated or dropped');
 		}
 	}
-	check('15. crisis.2610 keeps both inline comments and still folds the scope',
+	check('15. crisis.2610 keeps both inline comments and leaves the scope unwrapped',
 		problems.length ? problems.join(' / ') : 'ok', 'ok');
 
 	console.log('='.repeat(60));

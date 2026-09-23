@@ -2576,15 +2576,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 					# NOT = { any_... } ---> count_... = { count = 0 limit = { ... } }
 					child_key = child.get('key', '')
-					if _ACTIVE_SAFE_NAV == 'fold' and not _is_safe_nav_key(child_key) and _is_unguarded_scope_block(child_key, child, guaranteed):
-						# 'NOT = { X = { A } }' and 'NOT = { X? = { A } }' mean the same thing
-						# ('not(X exists AND A)'), but only the second one states that X may be
-						# missing - which is exactly what the negation allows. Pushing the
-						# negation inside instead ('X = { not A }') would require X to exist.
-						child['key'] = child_key + '?'
-						changed_any = True
-						print(f"Applied safe navigation (negated scope): {child_key}?", file=sys.stderr)
-					elif USE_COUNT_TRIGGERS and child_key.startswith('any_') and isinstance(child.get('val'), list) and not child_key == 'any_owned_pop_amount':
+					# A scope block under a negation is left exactly as written: 'NOT = { X = { A } }'
+					# already means 'not(X exists AND A)', and the negation itself states the
+					# optionality - rewriting it to 'NOT = { X? = { A } }' only restates it and turns
+					# a perfectly idiomatic trigger into a strange one for no reason. We also never
+					# push the negation into a block whose scope may be missing (guarded below).
+					if USE_COUNT_TRIGGERS and child_key.startswith('any_') and isinstance(child.get('val'), list) and not child_key == 'any_owned_pop_amount':
 						cm_open = node.get('_cm_open') # Get comment
 						count_key = 'count_' + child_key[4:]
 						count_node = {'key': 'count', 'op': '=', 'val': '0', 'type': 'node'}
@@ -2605,7 +2602,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					else:
 						# The NOT block is redundant. It can be replaced by its negated child -
 						# unless that child is a scope block whose scope may be missing: then the
-						# existence check has to stay on the block itself (see the fold above).
+						# existence check has to stay on the block itself (left as written above).
 						child_copy = copy.deepcopy(child)
 						if not _is_unguarded_scope_block(child_key, child, guaranteed) and _negate_numerical_comparison_recursively(child_copy, guaranteed_scopes=guaranteed):
 							# if we just created a count_... with count != 0, convert to any_

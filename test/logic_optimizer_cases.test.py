@@ -153,6 +153,15 @@ check('collapsed comment block is re-indented', not issues, out)
 check('collapsed comment block keeps its comment once', out.count('For populated systems') == 1, out)
 check('collapsed comment block is stable', run(out) == out, out)
 
+# --- a scope block under a negation is left as written (no '?' added) ----------------
+# 'NOT = { from = { ... } }' already means 'not(from exists AND ...)'; the negation itself
+# states the optionality, so fold mode must not rewrite it into 'NOT = { from? = { ... } }'.
+NEGATED_SCOPE = ('e = {\n\ttrigger = {\n\t\tNOT = { from = { has_origin = origin_unplugged } }\n\t}\n}\n')
+out = run(NEGATED_SCOPE)
+check('negated scope block gets no safe navigation', 'from? = {' not in out, out)
+check('negated scope block keeps its NOT', 'NOT = { from = { has_origin = origin_unplugged } }' in out, out)
+check('negated scope block is stable', run(out) == out, out)
+
 print('=' * 60)
 print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))
 sys.exit(1 if failed else 0)
