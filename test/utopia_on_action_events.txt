@@ -83,8 +83,7 @@ planet_event = {
 
 	trigger = {
 		from = { has_valid_civic = civic_fanatic_purifiers }
-		exists = fromfrom
-		fromfrom = {
+		fromfrom? = {
 			NOR = {
 				is_robot_pop_group = yes
 				is_same_species = owner_species
@@ -116,8 +115,7 @@ planet_event = {
 
 	trigger = {
 		from = { has_valid_civic = civic_hive_devouring_swarm }
-		exists = fromfrom
-		fromfrom = {
+		fromfrom? = {
 			NOR = {
 				is_robot_pop_group = yes
 				is_same_species = owner_species
@@ -447,8 +445,7 @@ country_event = {
 		while = {
 			limit = {
 				any_owned_army = {
-					exists = species
-					species = {
+					species? = {
 						NOR = {
 							has_trait = trait_cybernetic
 							is_robotic = yes
@@ -458,8 +455,7 @@ country_event = {
 			}
 			random_owned_army = {
 				limit = {
-					exists = species
-					species = {
+					species? = {
 						NOR = {
 							has_trait = trait_cybernetic
 							is_robotic = yes
@@ -481,8 +477,7 @@ country_event = {
 			limit = { is_ship_class = shipclass_colonizer }
 			random_owned_ship = {
 				limit = {
-					exists = species
-					species = {
+					species? = {
 						NOR = {
 							has_trait = trait_cybernetic
 							is_robotic = yes
@@ -891,8 +886,7 @@ country_event = {
 			limit = { is_ship_class = shipclass_colonizer }
 			random_owned_ship = {
 				limit = {
-					exists = species
-					species = { is_robotic = no is_livestock = no }
+					species? = { is_robotic = no is_livestock = no }
 				}
 				change_species = event_target:current_synthspecies # Vfix opt
 			}
@@ -900,16 +894,12 @@ country_event = {
 		# Vfix merge
 		every_owned_army = {
 			limit = {
-				exists = species
-				species = { is_robotic = no is_livestock = no }
+				species? = { is_robotic = no is_livestock = no }
 				OR = {
 					army_type = assault_army
 					army_type = defense_army
 				}
-				NAND = {
-					exists = planet
-					planet = { has_ground_combat = yes }
-				}
+				NOT = { planet? = { has_ground_combat = yes } }
 			}
 			modify_army = {
 				name = random
@@ -3105,42 +3095,36 @@ country_event = {
 				}
 			}
 		}
-		if = {
-			limit = { exists = event_target:previous_chosen_leader }
-			event_target:previous_chosen_leader = {
-				kill_leader = { show_notification = yes }
-			}
+		event_target:previous_chosen_leader? = {
+			kill_leader = { show_notification = yes }
 		}
-		if = {
-			limit = { exists = event_target:chosen_leader_lost_patron }
-			event_target:chosen_leader_lost_patron = {
-				if = {
-					limit = { has_trait = leader_trait_composer_chosen }
-					remove_trait = leader_trait_composer_chosen
-				}
-				if = {
-					limit = { has_trait = leader_trait_instrument_chosen }
-					remove_trait = leader_trait_instrument_chosen
-				}
-				if = {
-					limit = { has_trait = leader_trait_eater_chosen }
-					remove_trait = leader_trait_eater_chosen
-				}
-				if = {
-					limit = { has_trait = leader_trait_cradle_chosen }
-					remove_trait = leader_trait_cradle_chosen
-				}
-				if = {
-					limit = { has_trait = leader_trait_whisperers_chosen }
-					remove_trait = leader_trait_whisperers_chosen
-				}
-				# Vfix: absolute degrade should not be intended!?
-				add_trait = { trait = leader_trait_psionic show_message = no }
-				modify_species = { # Vfix sync trait
-					add_trait = trait_psionic
-					effect = {
-						prev = { change_leader_portrait = prev }
-					}
+		event_target:chosen_leader_lost_patron? = {
+			if = {
+				limit = { has_trait = leader_trait_composer_chosen }
+				remove_trait = leader_trait_composer_chosen
+			}
+			if = {
+				limit = { has_trait = leader_trait_instrument_chosen }
+				remove_trait = leader_trait_instrument_chosen
+			}
+			if = {
+				limit = { has_trait = leader_trait_eater_chosen }
+				remove_trait = leader_trait_eater_chosen
+			}
+			if = {
+				limit = { has_trait = leader_trait_cradle_chosen }
+				remove_trait = leader_trait_cradle_chosen
+			}
+			if = {
+				limit = { has_trait = leader_trait_whisperers_chosen }
+				remove_trait = leader_trait_whisperers_chosen
+			}
+			# Vfix: absolute degrade should not be intended!?
+			add_trait = { trait = leader_trait_psionic show_message = no }
+			modify_species = { # Vfix sync trait
+				add_trait = trait_psionic
+				effect = {
+					prev = { change_leader_portrait = prev }
 				}
 			}
 		}

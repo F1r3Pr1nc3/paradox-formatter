@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -428,7 +428,17 @@ def parse(tokens, text):
 
 				cm, offset = get_inline_comment_and_offset(i, token_line)
 				if cm:
-					parent_node['_cm_close'] = cm
+					target = parent_node
+					# A trailing comment after a run of closing braces on one line
+					# (`... } } # comment`) refers to the innermost block, not the
+					# outermost wrapper; push it inward through the block chain.
+					if i > 0 and tokens[i - 1]['val'] == '}' and tokens[i - 1]['line'] == token_line:
+						while (isinstance(target.get('val'), list) and target['val']
+							   and target['val'][-1].get('type') == 'node'
+							   and isinstance(target['val'][-1].get('val'), list)
+							   and '_cm_close' not in target['val'][-1]):
+							target = target['val'][-1]
+					target['_cm_close'] = cm
 					i += offset
 			preceding_comments_buffer = [] # Clear buffer on closing brace
 			i += 1; continue
