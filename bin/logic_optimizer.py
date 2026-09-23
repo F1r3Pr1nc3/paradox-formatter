@@ -1773,6 +1773,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				safe_nav_node = None
 				safe_nav_block = None
 				j = i + 1
+				skipped = 0  # at most one scope-ignoring sibling may sit between the guard and its block
 				while j < len(node_list):
 					cand = node_list[j]
 					if cand['type'] == 'comment':
@@ -1815,6 +1816,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					# is only allowed when such a sibling cannot touch that scope:
 					# 'exists = from' / 'is_owned_by = from' / 'from = { ... }' must stay as is.
 					if any(_uses_scope_as_value([cand], name) for name in guard_scopes):
+						break
+					# A sibling that ignores the scope may sit between the guard and its block,
+					# but only one: any further and the guard is no longer clearly nearby, so
+					# leave 'exists = x' + 'x = { ... }' as written.
+					skipped += 1
+					if skipped > 1:
 						break
 					j += 1
 

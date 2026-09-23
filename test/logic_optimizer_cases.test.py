@@ -162,6 +162,20 @@ check('negated scope block gets no safe navigation', 'from? = {' not in out, out
 check('negated scope block keeps its NOT', 'NOT = { from = { has_origin = origin_unplugged } }' in out, out)
 check('negated scope block is stable', run(out) == out, out)
 
+# --- the safe-navigation fold stays nearby: at most one scope-ignoring sibling in between ---
+def _fold_distance(intermediate):
+	parts = ['e = {', '\ttrigger = {', '\t\texists = from']
+	parts += ['\t\t' + c for c in intermediate]
+	parts += ['\t\tfrom = { is_ruler = yes }', '\t}', '}']
+	return '\n'.join(parts) + '\n'
+
+out = run(_fold_distance([]))
+check('fold: guard directly before the scope block folds', 'from? = {' in out, out)
+out = run(_fold_distance(['has_star_flag = x']))
+check('fold: one scope-ignoring condition in between folds', 'from? = {' in out, out)
+out = run(_fold_distance(['has_star_flag = x', 'has_other_flag = y']))
+check('fold: two conditions in between keep the guard', 'from? = {' not in out and 'exists = from' in out, out)
+
 print('=' * 60)
 print('logic optimizer cases: %d/%d passed' % (passed, passed + failed))
 sys.exit(1 if failed else 0)
