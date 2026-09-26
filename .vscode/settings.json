@@ -1,4 +1,6 @@
 {
     "editor.autoIndentOnPaste": true,
-    "chat.disableAIFeatures": false
+	"chat.disableAIFeatures": false,
+	"editor.insertSpaces": false,
+	"editor.detectIndentation": false
 }

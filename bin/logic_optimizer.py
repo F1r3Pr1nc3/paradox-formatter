@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -812,6 +812,29 @@ def _is_negation(n1, n2):
 		return False
 	return _is_negation_recursive(n1, n2)
 
+def _limits_are_negations(a, b):
+	"""True when two 'limit' child lists are logical opposites.
+
+	Each list holds the node children of a 'limit = { ... }' block, whose entries are
+	implicitly ANDed. The formatter is deliberately aggressive about scopes - every scope is
+	treated as existing - so 'from = { NOT = { X } }' counts as the opposite of
+	'from = { X }', which '_is_negation' already accepts for the single-condition case.
+	"""
+	a = [n for n in a if n.get('type') == 'node']
+	b = [n for n in b if n.get('type') == 'node']
+	if not a or not b:
+		return False
+	if len(a) == 1 and len(b) == 1:
+		return _is_negation(a[0], b[0])
+	# Multi-condition limit (implicit AND): one side must be a single NOT wrapping the
+	# whole of the other side ('NOT = { A B }' is the opposite of 'A AND B').
+	def _not_wraps(wrapper, target):
+		if len(wrapper) == 1 and wrapper[0].get('key') == 'NOT' and isinstance(wrapper[0].get('val'), list):
+			inner = [n for n in wrapper[0]['val'] if n.get('type') == 'node']
+			return len(inner) == len(target) and all(nodes_are_equal(x, y) for x, y in zip(inner, target))
+		return False
+	return _not_wraps(a, b) or _not_wraps(b, a)
+
 def _is_safe_nav_key(key):
 	# 'scope? = { ... }' means 'exists = scope AND scope = { ... }': the existence
 	# guard is part of the expression, so a negation must never be pushed into
@@ -1112,18 +1135,14 @@ def _negated_safe_nav_block(node, guard_scopes):
 
 
 def _is_negation_node_for_unwrap(node, guaranteed_scopes=None):
-	"""'_is_negation_node()', but a scope block only counts as a negation when its scope is
-	known to exist.
+	"""'_is_negation_node()' - every scope is treated as existing.
 
-	'X = { NOT = { k } }' is not the negation of 'X = { k }' while X may be missing (the
-	block is false then, while its negation would be true), so such a node must not be
-	unwrapped into its positive form by the NOR/NAND extractions.
+	A scope block counts as the negation of its positive form here even while the scope may
+	be missing ('X = { NOT = { k } }' vs 'X = { k }'), so such nodes are unwrapped into
+	their positive form by the NOR/NAND extractions too. The 'guaranteed_scopes' argument
+	is kept so the call sites stay unchanged.
 	"""
-	if not _is_negation_node(node):
-		return False
-	if isinstance(node.get('val'), list) and _is_unguarded_scope_block(str(node.get('key', '')), node, guaranteed_scopes):
-		return False
-	return True
+	return _is_negation_node(node)
 
 
 def _carries_comment(nodes, comment_text):
@@ -1331,6 +1350,32 @@ def _if_condition_guesses_trigger(if_node):
 	if _has_scope_block(children):
 		return False
 	return all(_looks_like_trigger_node(c) for c in body)
+
+
+def _conditional_limit_and_body(cond_node):
+	"""Split an 'if'/'else_if' into its limit and body, or None when not a plain conditional.
+
+	Returns {'limit': [node, ...], 'limit_node': node, 'body': [node, ...]} where 'limit' are
+	the node children of the 'limit' block (comments ignored) and 'body' every other child in
+	order (comments included, so they survive a rewrite into 'else').
+	"""
+	children = cond_node.get('val')
+	if not isinstance(children, list):
+		return None
+	limit_node = None
+	body_nodes = []
+	for child in children:
+		if child.get('type') == 'comment':
+			body_nodes.append(child)
+			continue
+		if child.get('key') == 'limit' and isinstance(child.get('val'), list) and limit_node is None:
+			limit_node = child
+		else:
+			body_nodes.append(child)
+	if limit_node is None:
+		return None
+	limit_nodes = [c for c in limit_node.get('val', []) if c.get('type') == 'node']
+	return {'limit': limit_nodes, 'limit_node': limit_node, 'body': body_nodes}
 
 
 def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None, if_implication_context=None):
@@ -1598,14 +1643,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 				node_items = [n for n in sequence if n['type'] == 'node']
 
-				# A scope block is not equivalent to its positive form while the scope may be
-				# missing ('from = { NOT = { k } }' is not the negation of 'from = { k }'), so
-				# such a sequence is left for the other passes instead of being merged.
-				unguarded_scope_block = any(
-					_is_unguarded_scope_block(str(n.get('key', '')), n, guaranteed) for n in node_items)
-
-				# This conversion always requires a pre-existing 'NOT/NOR/NAND'
-				if len(node_items) > 1 and not unguarded_scope_block and any(n.get('key') in NEGATION_LOGIC_KEYS for n in node_items):
+				# This conversion always requires a pre-existing 'NOT/NOR/NAND'. A scope block
+				# counts as the negation of its positive form as well - scopes are assumed to
+				# exist - so 'from = { NOT = { k } }' merges into the NOR/NAND like any leaf.
+				if len(node_items) > 1 and any(n.get('key') in NEGATION_LOGIC_KEYS for n in node_items):
 					# Merge the sequence into a single NOR/NAND block
 					combined_children = []
 					for item in sequence:
@@ -1680,6 +1721,72 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			node_list[idx] = or_node
 			changed_any = True
 			print("Rewrote trigger if into OR implication", file=sys.stderr)
+
+	# --- IF/ELSE CHAIN: drop a conditional whose limit is the opposite of the previous one ---
+	# 'if = { limit = L body1 }' followed by 'if/else_if = { limit = NOT L body2 }' fires
+	# exactly one of the two bodies (L and NOT L are complementary), so the second limit is
+	# redundant: it becomes 'else'. Effect-side only ('scope_context' None or 'effect'): in a
+	# trigger list an 'if' is the implication shorthand and an 'else' would be meaningless.
+	# The negated scope block form ('from = { NOT = { X } }') is accepted too - the formatter
+	# treats every scope as existing.
+	if scope_context in (None, 'effect'):
+		i = 0
+		while i < len(node_list):
+			node = node_list[i]
+			if (node.get('type') != 'node' or node.get('op') != '='
+					or node.get('key') not in ('if', 'else_if')):
+				i += 1
+				continue
+			# In a container we know nothing about, an 'if' whose body is trigger-only is the
+			# trigger implication handled above, not an effect conditional - leave it alone.
+			if scope_context is None and _if_condition_guesses_trigger(node):
+				i += 1
+				continue
+			first = _conditional_limit_and_body(node)
+			if first is None:
+				i += 1
+				continue
+			# Find the next non-comment sibling.
+			j = i + 1
+			while j < len(node_list) and node_list[j].get('type') == 'comment':
+				j += 1
+			if j >= len(node_list):
+				break
+			nxt = node_list[j]
+			if (nxt.get('type') != 'node' or nxt.get('op') != '='
+					or nxt.get('key') not in ('if', 'else_if')):
+				i += 1
+				continue
+			if scope_context is None and _if_condition_guesses_trigger(nxt):
+				i += 1
+				continue
+			second = _conditional_limit_and_body(nxt)
+			if second is None or not any(c.get('type') == 'node' for c in second['body']):
+				i += 1
+				continue
+			# 'else' must end the chain: a following 'else_if'/'else' would be orphaned.
+			if _has_following_else(node_list, j):
+				i += 1
+				continue
+			if not _limits_are_negations(first['limit'], second['limit']):
+				i += 1
+				continue
+			# The second limit is dropped, so it must carry no comments of its own (a comment
+			# sitting before 'limit' is a sibling node and survives via 'body'; '_cm_preceding'
+			# points at those very nodes).
+			limit_node = second['limit_node']
+			if any(limit_node.get(m) for m in ('_cm_inline', '_cm_open', '_cm_close')):
+				i += 1
+				continue
+			if any(c.get('type') == 'comment' for c in limit_node.get('val', [])):
+				i += 1
+				continue
+			nxt['key'] = 'else'
+			nxt['val'] = second['body']
+			nxt.pop('_fp', None)
+			changed_any = True
+			print("Folded opposite conditional into else", file=sys.stderr)
+			i = j + 1
 
 	# --- REPAIR 'NOR = { exists = X  X = { C.. } }' ---
 	# That leftover is always false while X exists, so the script it came from can only have
@@ -1874,7 +1981,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					cm_inline = node.get('_cm_inline')
 					if cm_inline:
 						sib = node_list[redundant_idx]
-						sib['_cm_inline'] = cm_inline + sib.get('_cm_inline', '')
+						sib['_cm_open'] = cm_inline + sib.get('_cm_open', '')
 					node_list.pop(i)
 					changed_any = True
 					print(f"Removed redundant guard before safe navigation: {redundant_key}", file=sys.stderr)
@@ -1896,7 +2003,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						negated_node['val'] = [neg_node]
 						cm_inline = node.get('_cm_inline')
 						if cm_inline:
-							negated_node['_cm_inline'] = cm_inline + negated_node.get('_cm_inline', '')
+							negated_node['_cm_open'] = cm_inline + negated_node.get('_cm_open', '')
 						node_list.pop(i)
 						changed_any = True
 						print(f"Applied safe navigation (negated scope): {negated_name}?", file=sys.stderr)
@@ -1919,7 +2026,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					nor_node['val'] = [neg_node]
 					cm_inline = node.get('_cm_inline')
 					if cm_inline:
-						nor_node['_cm_inline'] = cm_inline + nor_node.get('_cm_inline', '')
+						nor_node['_cm_open'] = cm_inline + nor_node.get('_cm_open', '')
 					# Keep the NOR's other children in place: comments stay, each leaf becomes
 					# its own 'NOT = { leaf }'.
 					replacement = [nor_node]
@@ -1947,7 +2054,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					safe_nav_node['val'] = [outer_not]
 					cm_inline = node.get('_cm_inline')
 					if cm_inline:
-						safe_nav_node['_cm_inline'] = cm_inline + safe_nav_node.get('_cm_inline', '')
+						safe_nav_node['_cm_open'] = cm_inline + safe_nav_node.get('_cm_open', '')
 					node_list.pop(i)
 					changed_any = True
 					print(f"Merged redundant guard into safe navigation: {safe_nav_name}?", file=sys.stderr)
@@ -1959,10 +2066,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					# Found a match!
 					sibling['key'] = scope_name + '?'
 
-					# Move an inline comment from the guard node to the scope node if possible
+					# The guard's inline comment moves onto the scope block's opening brace
 					cm_inline = node.get('_cm_inline')
 					if cm_inline:
-						sibling['_cm_inline'] = cm_inline + sibling.get('_cm_inline', '')
+						sibling['_cm_open'] = cm_inline + sibling.get('_cm_open', '')
 
 					# Remove the guard node
 					node_list.pop(i)
@@ -2043,7 +2150,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 										# Prepend comments from exists node to sibling if possible
 										cm_inline = exists_node.get('_cm_inline')
 										if cm_inline:
-											sibling_node['_cm_inline'] = cm_inline + sibling_node.get('_cm_inline', '')
+											sibling_node['_cm_open'] = cm_inline + sibling_node.get('_cm_open', '')
 
 										# Collect comments from limit node and if children
 										comments_to_keep = []
