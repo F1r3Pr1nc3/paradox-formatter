@@ -291,11 +291,9 @@ def _negate_numerical_comparison_recursively(node, dry_run=False, guaranteed_sco
 		# --- RECURSIVE STEP ---
 		# This is a "deep" search down a chain of single-child nodes.
 		# Recurse only if there's a single child and the current node is just a wrapper.
-		if len(children) == 1 and not key.startswith(('any_', 'count_')) and key not in NON_NEGATABLE_SCOPES and not _is_safe_nav_key(key) \
-				and not _is_unguarded_scope_block(key, node, guaranteed_scopes):
-			# Never walk into a scope block whose scope may be missing: the negation
-			# belongs to the block as a whole ('not(X exists and A)'), it must not be
-			# turned into 'X exists and not A'.
+		if len(children) == 1 and not key.startswith(('any_', 'count_')) and key not in NON_NEGATABLE_SCOPES and not _is_safe_nav_key(key):
+			# Every scope is assumed to exist, so a scope block is walked into like any
+			# other wrapper ('not(X and A)' becomes 'X and not A').
 			return _negate_numerical_comparison_recursively(children[0], dry_run, guaranteed_scopes)
 
 	return False
@@ -1132,17 +1130,6 @@ def _negated_safe_nav_block(node, guard_scopes):
 	if scope_name not in guard_scopes or not isinstance(inner[0].get('val'), list):
 		return None
 	return scope_name, inner[0]
-
-
-def _is_negation_node_for_unwrap(node, guaranteed_scopes=None):
-	"""'_is_negation_node()' - every scope is treated as existing.
-
-	A scope block counts as the negation of its positive form here even while the scope may
-	be missing ('X = { NOT = { k } }' vs 'X = { k }'), so such nodes are unwrapped into
-	their positive form by the NOR/NAND extractions too. The 'guaranteed_scopes' argument
-	is kept so the call sites stay unchanged.
-	"""
-	return _is_negation_node(node)
 
 
 def _carries_comment(nodes, comment_text):
@@ -2531,7 +2518,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 				children_nodes = [n for n in node['val'] if n['type'] == 'node']
 				# NOR <=> AND = { 'NO'/'NOT' ... }
-				if children_nodes and all(_is_negation_node_for_unwrap(c, guaranteed) or (c.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(c, dry_run=True, guaranteed_scopes=guaranteed)) for c in children_nodes) and any(c.get('key') in NEGATION_LOGIC_KEYS or c.get('val') == 'no' for c in children_nodes):
+				if children_nodes and all(_is_negation_node(c) or (c.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(c, dry_run=True, guaranteed_scopes=guaranteed)) for c in children_nodes) and any(c.get('key') in NEGATION_LOGIC_KEYS or c.get('val') == 'no' for c in children_nodes):
 					# User preference: All negative boolean should be merged into NOR, but avoid double negation ('yes' becoming 'no' inside).
 					# Only block 'yes' booleans.
 					if all(c.get('val') != 'yes' for c in children_nodes):
@@ -2793,11 +2780,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						changed_any = True
 						print(f"Converted NOT={{{child_key}}} to {count_key}", file=sys.stderr)
 					else:
-						# The NOT block is redundant. It can be replaced by its negated child -
-						# unless that child is a scope block whose scope may be missing: then the
-						# existence check has to stay on the block itself (left as written above).
+						# The NOT block is redundant. It can be replaced by its negated child.
 						child_copy = copy.deepcopy(child)
-						if not _is_unguarded_scope_block(child_key, child, guaranteed) and _negate_numerical_comparison_recursively(child_copy, guaranteed_scopes=guaranteed):
+						if _negate_numerical_comparison_recursively(child_copy, guaranteed_scopes=guaranteed):
 							# if we just created a count_... with count != 0, convert to any_
 							child_key = child_copy.get('key', '')
 							if child_key.startswith('count_') and isinstance(child_copy.get('val'), list):
@@ -2921,8 +2906,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							if '_cm_close' in node: del node['_cm_close']
 							changed_any = True
 						# Simplification for `NOT = { A = { B = yes } }` to `A = { B = no }`.
-						# An optional scope keeps its block inside the NOT (Rule above).
-						elif isinstance(child.get('val'), list) and not _is_unguarded_scope_block(child_key, child, guaranteed):
+						elif isinstance(child.get('val'), list):
 							grandchildren = [gc for gc in child.get('val') if gc['type'] == 'node']
 							if len(grandchildren) == 1:
 								grandchild = grandchildren[0]
@@ -3279,7 +3263,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					print("Created NAND from OR-NOT structure", file=sys.stderr)
 
 				# NAND <=> OR = { 'NO'/'NOT' ... }
-				elif all(_is_negation_node_for_unwrap(n, guaranteed) or (n.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(n, dry_run=True, guaranteed_scopes=guaranteed)) for n in children) and any(n.get('key') in NEGATION_LOGIC_KEYS or n.get('val') == 'no' for n in children):
+				elif all(_is_negation_node(n) or (n.get('key') not in ('limit', 'trigger') and _negate_numerical_comparison_recursively(n, dry_run=True, guaranteed_scopes=guaranteed)) for n in children) and any(n.get('key') in NEGATION_LOGIC_KEYS or n.get('val') == 'no' for n in children):
 					new_children = []
 					for item in node['val']:
 						if item['type'] == 'comment':
