@@ -941,7 +941,13 @@ def _positive_form_of(node, guaranteed_scopes=None):
 		if len(children_nodes) == 1:
 			child = children_nodes[0]
 			if child.get('key') == 'NOR':
-				new_node['val'] = [{'key': 'OR', 'op': '=', 'val': _get_positive_form(child, guaranteed_scopes), 'type': 'node'}]
+				positive = _get_positive_form(child, guaranteed_scopes)
+				if len(positive) == 1 and positive[0].get('key') == 'OR':
+					# The NOR positive form already is the OR - do not wrap it again, or
+					# the extra level has to be hoisted away again further down.
+					new_node['val'] = positive
+				else:
+					new_node['val'] = [{'key': 'OR', 'op': '=', 'val': positive, 'type': 'node'}]
 				return [new_node]
 			else:
 				new_node['val'] = _get_positive_form(child, guaranteed_scopes)
