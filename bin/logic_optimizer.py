@@ -907,10 +907,21 @@ def _attach_comments(target, source):
 
 
 def _get_positive_form(node, guaranteed_scopes=None):
-	"""Positive form of a negation node, keeping the node's own comments."""
+	"""Positive form of a negation node, keeping the node's own comments.
+
+	The comments are put on the first node of the result; when there is none (the positive
+	form is only comments) they are kept as comment nodes right in front of it - a comment
+	must never go missing just because the node it sat on was unwrapped.
+	"""
 	result = _positive_form_of(node, guaranteed_scopes)
-	if result and result[0].get('type') == 'node':
-		_attach_comments(result[0], node)
+	target = next((n for n in result if n.get('type') == 'node'), None)
+	if target is not None:
+		_attach_comments(target, node)
+	else:
+		for meta in ('_cm_open', '_cm_inline', '_cm_close'):
+			text = node.get(meta)
+			if text and not _carries_comment(result, text):
+				result = [{'type': 'comment', 'val': text.strip()}] + result
 	return result
 
 
