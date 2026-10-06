@@ -3070,6 +3070,13 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						elif child.get('key') == 'AND' and isinstance(child.get('val'), list):
 							node['key'] = 'NAND'
 							node['val'] = [c for c in node['val'] if c.get('type') == 'comment'] + child['val']
+							# The AND is folded into the NAND, so its own comments travel along.
+							if child.get('_cm_open'):
+								node['_cm_open'] = node.get('_cm_open', '') + child['_cm_open']
+							if '_cm_close' in child:
+								node['_cm_close'] = child['_cm_close']
+							if '_cm_inline' in child:
+								node['_cm_inline'] = child['_cm_inline']
 							changed_any = True
 							print("Created NAND from NOT-AND", file=sys.stderr)
 							key = 'NAND'
@@ -3110,6 +3117,13 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						elif child.get('key') == 'OR' and isinstance(child.get('val'), list):
 							node['key'] = 'NOR'
 							node['val'] = [c for c in node['val'] if c.get('type') == 'comment'] + child['val']
+							# The OR is folded into the NOR, so its own comments travel along.
+							if child.get('_cm_open'):
+								node['_cm_open'] = node.get('_cm_open', '') + child['_cm_open']
+							if '_cm_close' in child:
+								node['_cm_close'] = child['_cm_close']
+							if '_cm_inline' in child:
+								node['_cm_inline'] = child['_cm_inline']
 							changed_any = True
 							print("Created NOR from NOT-OR", file=sys.stderr)
 							key = 'NOR'
