@@ -57,6 +57,11 @@
                     ],
                     "default": "auto",
                     "description": "How the formatter handles the Stellaris v4.4+ safe navigation syntax (scope? = { ... })."
+                },
+                "paradox-formatter.ifElseOrConversion": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Rewrite a trigger conditional 'if = { limit = L body }' as the equivalent implication 'OR = { NOT = { L } body }' (an empty-bodied 'if'/'else' pair becomes one OR), and fold complementary 'OR' branches back into 'if'/'else'. Off by default."
                 }
             }
         },

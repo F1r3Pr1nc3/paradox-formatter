@@ -42,6 +42,10 @@ function formatWithPythonBridge(text, forceCompact) {
 		const safeNavigationMode = config.get('safeNavigation') || 'auto';
 		args.push('--safe-navigation', String(safeNavigationMode));
 
+		if (config.get('ifElseOrConversion') === true) {
+			args.push('--if-else-or');
+		}
+
 		// 1. Spawn Python process
 		const pythonProcess = spawn(pythonPath, args);
 

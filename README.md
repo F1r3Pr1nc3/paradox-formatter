@@ -49,7 +49,9 @@ Allows formatting of just a specific block of code without touching the rest of 
 ### 4. Advanced Logic Optimization (NAND)
 The extension can now recognize and simplify complex logical expressions, such as nested `NAND` blocks, into a more readable and efficient format. This is particularly useful for complex AI logic or event scripting.
 
-Inside `allow`, `potential`, `destroy_trigger` and `trigger` blocks a trigger-side conditional is rewritten as the equivalent implication: `if = { limit = L body }` means "if `L` then `body`", which is exactly `OR = { NOT = { L } body }`. In a container the formatter does not know (`my_scripted_trigger = { ... }` and the like) a conditional is rewritten only when it can only be trigger script - its body consisting of trigger leaves (`is_owned_by = ...`, `is_same_value = ...`, comparisons, `any_*`/`count_*`, logic) - because an effect body can never look like that; conditionals that use scope blocks in their limit or body are left untouched there. Conditional chains (`else_if`/`else`) keep their form, effect-side conditionals are never touched, and the whole rewrite is independent of the safe navigation setting. A conditional that holds a tooltip (`custom_tooltip` or its `text` key, anywhere in the limit or body) is always left as written, because tooltips exist in trigger and effect script alike and moving one into an OR branch - or into the negated limit - would change when it is shown.
+> **Optional - off by default.** The conditional rewrites in this section - a trigger `if` into the `OR` implication, and complementary `OR` branches back into `if`/`else` - only run when the `paradox-formatter.ifElseOrConversion` setting is enabled (see [section 5](#5-conditional--or-conversion-optional-off-by-default)). The NAND/NOR merging and the scope handling described below are always on.
+
+Inside `allow`, `potential`, `destroy_trigger` and `trigger` blocks a trigger-side conditional is rewritten as the equivalent implication: `if = { limit = L body }` means "if `L` then `body`", which is exactly `OR = { NOT = { L } body }`. In a container the formatter does not know (`my_scripted_trigger = { ... }` and the like) a conditional is rewritten only when it can only be trigger script - its body consisting of trigger leaves (`is_owned_by = ...`, `is_same_value = ...`, comparisons, `any_*`/`count_*`, logic) - because an effect body can never look like that; scope blocks in the body are recursed into, so a body like `federation = { has_federation_perk = ... }` counts as trigger too, while an effect verb (`set_`/`add_`/`kill_`/..., `every_*`/`random_*`/`ordered_*`, a `*_event`, or `immediate`/`hidden_effect`/`random_list`/`switch`) proves effect script and stops the scan, so the conditional is left as written. An `if` with an empty body and a following `else` is `L OR B` in trigger scope (an empty body is true), so the pair collapses into one OR. Conditional chains (`else_if`) keep their form, effect-side conditionals are never touched, and the whole rewrite is independent of the safe navigation setting. A conditional that holds a tooltip (`custom_tooltip` or its `text` key, anywhere in the limit or body) is always left as written, because tooltips exist in trigger and effect script alike and moving one into an OR branch - or into the negated limit - would change when it is shown.
 
 Alongside that, the formatter repairs a specific dead leftover that older builds of this extension used to write: `NOR = { exists = x  x = { C... } }`. While `x` exists the guard makes the NOR false, and while it is missing the block cannot be true, so the script behind it was really the guarded, negated block. In `fold` mode it becomes `x? = { NOT = { C... } }`, which the usual simplification turns into `x? = { <negated C...> }`:
 
@@ -139,10 +141,33 @@ limit = {
 }
 ```
 
-### 5. Format All Files
+### 5\. Conditional ⇄ OR Conversion (optional, off by default)
+
+The conditional rewrites described in [section 4](#4-advanced-logic-optimization-nand) are behind their own setting, because they change how a script *reads*, not just how it is formatted. Enable them with `paradox-formatter.ifElseOrConversion`:
+
+```jsonc
+// .vscode/settings.json
+{
+    "paradox-formatter.ifElseOrConversion": true   // default: false
+}
+```
+
+| Direction | Conversion |
+| --- | --- |
+| `if` → `OR` | `if = { limit = L body }` becomes `OR = { NOT = { L } body }` (`L` implies `body`). |
+| `if`/`else` → `OR` | an `if` with an empty body followed by `else = { B }` is `L OR B` (an empty body is true), so the pair collapses into a single `OR`. |
+| `OR` → `if`/`else` | `OR = { AND = { A ...B } AND = { NOT = { A } ...C } }` becomes `if = { limit = { A } ...B } else = { ...C }`, which evaluates `A` only once. |
+
+With the setting off - the default - none of the three runs: a trigger `if` keeps its `if`, and complementary `OR` branches keep their `OR`. Everything else is unaffected, in particular the NAND/NOR merging, the `scope?` folding, the NOR repair and the effect-side `if`/`else_if` → `else` fold. The setting is independent of `paradox-formatter.safeNavigation` and applies to whole-document formatting and to selections alike.
+
+As with the rest of the aggressive scope handling, these rewrites assume every scope exists, which is why they are opt-in rather than always on.
+
+  * Regression test: `node test/extension_ifelseor_flag.test.js` (asserts the setting reaches the Python tool as `--if-else-or`).
+
+### 6. Format All Files
 You can trigger a bulk formatting operation across all open files or the entire workspace using the `PDX Formatter: Format all files` command.
 
-### 6. Safe Navigation Support (Stellaris v4.4+)
+### 7. Safe Navigation Support (Stellaris v4.4+)
 Enable or disable the four handling modes for the Stellaris **v4.4+ safe navigation** syntax (`xyz? = { ... }`) with the `paradox-formatter.safeNavigation` setting:
 
 | Mode | Behaviour |
@@ -165,11 +190,14 @@ Notes:
 * `exists = xyz` + `NOT = { xyz = { C... } }` becomes `xyz? = { not C... }` (`NAND` instead of `NOT` when the block holds several conditions), because `xyz = { ... }` can only be true when the scope exists, so `exists AND NOT(C...)` is exactly `exists AND NOT(xyz = { C... })`, and the inner negation is collapsed onto its positive form.
 * The same holds for the disjunctive form: `OR = { NOT = { exists = xyz } xyz? = { NOT = { C... } } }` (the long way other tools and hand conversions write `NOT = { xyz = { C... } }`) collapses into `NOT = { xyz? = { C... } }`, since `not(exists xyz) OR (xyz exists AND not C...)` is `not(xyz exists AND C...)`. The inner negation may be a `NOT`, a `NOR`/`NAND` or a `= no`/`!=` leaf; anything else (un-negated content, a different scope, extra children) is left alone. A redundant `exists = xyz` in front of `NOT = { xyz? = { C... } }` is merged into `xyz? = { NOT = { C... } }`.
 * Every scope is assumed to exist, so a negation is pushed into a scope block like any other wrapper: `NOT = { xyz = { C... } }` becomes `xyz = { not C... }` (`NOR` when the content is an `OR`, e.g. `NOT = { xyz = { OR = { a b } } }` becomes `xyz = { NOR = { a b } }`). A scope block therefore also counts as the negation of its positive form, so `X = { NOT = { k } }` merges into a `NAND`/`NOR` as if it were `not X = { k }`. This is the historic (pre-0.5.9) behaviour and is only exact while the scope exists.
+* Two negations that wrap a whole scope block cancel: `NOT = { xyz = { NOT = { C... } } }` is `xyz = { C... }`, because while `xyz` exists `not(not C...)` is just `C...` - whatever `C...` is (a leaf, a scope block, or an `any_*`/`count_*` trigger block, which is moved as it stands since a `NOT` is never pushed into one). A comment on either vanishing `NOT` node stops the fold (dropping the node would lose it), while a comment on the scope block itself is kept as written.
+* Comments always travel with the block they end up in: a comment that sat on a negation (`NOR = { # c ... }`) follows it when the negation is unwrapped, merged into a sibling `NOR`/`NAND` or hoisted out of a nested block - it is never dropped and never duplicated, in either direction.
 * A `xyz? = { ... }` node is never negated (`exists AND ...` cannot be negated by flipping only its inner value), and trigger-side conditionals (`if = { limit = L body }`, i.e. `L implies body`) are never folded into `scope? = ...` - inside `allow`, `potential`, `destroy_trigger` and `trigger` blocks they are rewritten as `OR = { NOT = { L } body }` instead (see section 4).
-* When reverting, the `if = { limit = { exists = xyz } xyz = { ... } }` wrapper is only written inside known effect scopes; everywhere else the flat `exists = xyz` + `xyz = { ... }` pair is used.
+* When reverting, the `if = { limit = { exists = xyz } xyz = { ... } }` wrapper is written inside known effect scopes and in an unknown container whose block is effect script; everywhere else (trigger scope, and unknown containers with trigger-only content) the flat `exists = xyz` + `xyz = { ... }` pair is used.
+* The reverse holds too: `if = { limit = { exists = xyz } xyz = { ... } }` folds back into `xyz? = { ... }` inside an unknown container - a scripted effect such as `create_voidworm_system_poi` carries no name that marks it as effect, so the conditional's own body decides, and only a body that can only be the trigger implication (`owner = { is_ai = yes }`, a negation) keeps its `if`. `$MACRO$` placeholders are ignored when a scope name is matched, so `exists = event_target:sys_$SIZE$` + `event_target:sys_$SIZE$ = { ... }` folds as well.
 * **Migration:** the old boolean `paradox-formatter.useSafeNavigation` option was replaced by this setting - `useSafeNavigation: true` corresponds to `safeNavigation: "fold"`.
 
-### 7. Diagnostics (CLI)
+### 8. Diagnostics (CLI)
 
 `--check-indent` reports every line whose indentation does not match its block depth (the tool's rule is one tab per level), for the input and for the result:
 
@@ -227,6 +255,9 @@ To ensure this formatter is used automatically when you save a file, you need to
 {
     // Sets the PDX Formatter as the default for all languages where it applies
     "editor.defaultFormatter": "f1r3pr1nc3.paradox-script-formatter",
+
+    // Optional: rewrite trigger conditionals between `if`/`else` and `OR` (see section 5)
+    "paradox-formatter.ifElseOrConversion": false,
 
     // Recommended: Set preferred indentation style (if not using .editorconfig)
     "editor.insertSpaces": false, // Use tabs
