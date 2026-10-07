@@ -31,14 +31,15 @@ USE_SAFE_NAVIGATION = False # v4.4: legacy flag, True = fold, False = revert
 # None keeps the legacy behaviour driven by USE_SAFE_NAVIGATION.
 SAFE_NAVIGATION_MODE = None
 _ACTIVE_SAFE_NAV = 'fold' # resolved per document in process_text()
-# Optional conditional <-> OR conversion, off by default (extension setting
-# 'paradox-formatter.ifElseOrConversion', or --if-else-or on the command line):
+# Conditional <-> OR conversion. On by default here, because the script is also imported as a
+# standalone utility by other tools (mod-updater4.4.py); the VS Code extension turns it off by
+# default through its 'paradox-formatter.ifElseOrConversion' setting (or --if-else-or):
 #   * a trigger 'if = { limit = L body }' becomes the implication 'OR = { NOT = { L } body }'
 #     (an empty-bodied 'if' plus a following 'else' becomes one OR), and
 #   * complementary OR branches 'OR = { AND = { A B } AND = { NOT = { A } C } }' fold back
 #     into 'if = { limit = { A } B } else = { C }'.
-# With it off - the default - conditionals are left in the form they were written in.
-IF_ELSE_OR_CONVERSIONS = False
+# With it off, conditionals are left in the form they were written in.
+IF_ELSE_OR_CONVERSIONS = True
 
 def configure_for_stellaris_version(version_nr):
 	"""
@@ -168,7 +169,11 @@ EFFECT_KEY_PREFIXES = (
 	'unlock_', 'lock_', 'steal_', 'reverse_', 'research_', 'establish_', 'cancel_', 'begin_',
 	'end_', 'close_', 'open_', 'declare_', 'random_',  'start_', 'stop_', 'apply_', 'pop_', 'switch_', 'multiply_', 'divide_', 'save_',
 )
-EFFECT_BLOCK_KEYS = ('immediate', 'after', 'hidden_effect', 'random_list', 'switch', 'inverted_switch', 'while')
+# Effect block keys that prove a body node is effect script. Shared with the effect-context
+# scopes below; 'switch'/'inverted_switch' are hybrid raw blocks, so they prove effect but are
+# not context scopes. A frozenset so the membership tests in _body_node_hint stay O(1).
+_EFFECT_BLOCK_COMMON = frozenset(('immediate', 'after', 'hidden_effect', 'random_list', 'while'))
+EFFECT_BLOCK_KEYS = _EFFECT_BLOCK_COMMON | frozenset(('switch', 'inverted_switch'))
 EFFECT_KEY_KEYWORDS = ('log', 'order_by', 'position', 'weights')
 # A conditional holding one of these is never rewritten as an OR: tooltips work in both
 # trigger and effect script, and moving them into a branch (or into the negated limit)
@@ -177,10 +182,9 @@ IF_IMPLICATION_EXCEPTION_KEYS = ('custom_tooltip', 'text')
 # Containers that hold effects only: inside them 'if = { limit = L body }' can be folded
 # into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
 # same conditional means 'L implies body' and has to become an OR instead.
-EFFECT_CONTEXT_SCOPES = {
-	'immediate', 'option', 'after', 'effect', 'hidden_effect', 'tooltip',
-	'success', 'fail', 'abort', 'while', 'random_list', 'random', "then", "on_success", "on_fail"
-}
+EFFECT_CONTEXT_SCOPES = _EFFECT_BLOCK_COMMON | frozenset((
+	'option', 'effect', 'tooltip', 'success', 'fail', 'abort', 'random', 'then', 'on_success', 'on_fail',
+))
 
 TRIGGER_QUANTIFIER_RE = re.compile(r'^(any_|count_)')
 EFFECT_QUANTIFIER_RE = re.compile(r'^(every_|ordered_)')

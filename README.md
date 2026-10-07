@@ -158,7 +158,7 @@ The conditional rewrites described in [section 4](#4-advanced-logic-optimization
 | `if`/`else` → `OR` | an `if` with an empty body followed by `else = { B }` is `L OR B` (an empty body is true), so the pair collapses into a single `OR`. |
 | `OR` → `if`/`else` | `OR = { AND = { A ...B } AND = { NOT = { A } ...C } }` becomes `if = { limit = { A } ...B } else = { ...C }`, which evaluates `A` only once. |
 
-With the setting off - the default - none of the three runs: a trigger `if` keeps its `if`, and complementary `OR` branches keep their `OR`. Everything else is unaffected, in particular the NAND/NOR merging, the `scope?` folding, the NOR repair and the effect-side `if`/`else_if` → `else` fold. The setting is independent of `paradox-formatter.safeNavigation` and applies to whole-document formatting and to selections alike.
+With the setting off - the default - none of the three runs: a trigger `if` keeps its `if`, and complementary `OR` branches keep their `OR`. Everything else is unaffected, in particular the NAND/NOR merging, the `scope?` folding, the NOR repair and the effect-side `if`/`else_if` → `else` fold. The setting is independent of `paradox-formatter.safeNavigation` and applies to whole-document formatting and to selections alike. The standalone `bin/logic_optimizer.py` script (used by tools like `mod-updater4.4.py`) defaults the conversion **on**; only the extension defaults it off.
 
 As with the rest of the aggressive scope handling, these rewrites assume every scope exists, which is why they are opt-in rather than always on.
 
