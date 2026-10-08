@@ -1390,6 +1390,11 @@ def _body_node_hint(node, depth=0):
 	effect. A scope, trigger or effect block is judged by its contents; anything else
 	proves nothing.
 	"""
+	# TODO: 'switch'/'inverted_switch' parse as 'raw_block', so the guard below returns None
+	# before their key is ever checked - a body holding a 'switch' never counts as effect
+	# evidence here. If a raw 'switch' should stop the trigger guess, recognise its key before
+	# this early return (or in the callers that scan a body).
+
 	if node.get('type') != 'node' or depth > 6:
 		return None
 	key = str(node.get('key', ''))
