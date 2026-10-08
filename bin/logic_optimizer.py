@@ -169,11 +169,6 @@ EFFECT_KEY_PREFIXES = (
 	'unlock_', 'lock_', 'steal_', 'reverse_', 'research_', 'establish_', 'cancel_', 'begin_',
 	'end_', 'close_', 'open_', 'declare_', 'random_',  'start_', 'stop_', 'apply_', 'pop_', 'switch_', 'multiply_', 'divide_', 'save_',
 )
-# Effect block keys that prove a body node is effect script. Shared with the effect-context
-# scopes below; 'switch'/'inverted_switch' are hybrid raw blocks, so they prove effect but are
-# not context scopes. A frozenset so the membership tests in _body_node_hint stay O(1).
-_EFFECT_BLOCK_COMMON = frozenset(('immediate', 'after', 'hidden_effect', 'random_list', 'while'))
-EFFECT_BLOCK_KEYS = _EFFECT_BLOCK_COMMON | frozenset(('switch', 'inverted_switch'))
 EFFECT_KEY_KEYWORDS = ('log', 'order_by', 'position', 'weights')
 # A conditional holding one of these is never rewritten as an OR: tooltips work in both
 # trigger and effect script, and moving them into a branch (or into the negated limit)
@@ -182,8 +177,9 @@ IF_IMPLICATION_EXCEPTION_KEYS = ('custom_tooltip', 'text')
 # Containers that hold effects only: inside them 'if = { limit = L body }' can be folded
 # into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
 # same conditional means 'L implies body' and has to become an OR instead.
-EFFECT_CONTEXT_SCOPES = _EFFECT_BLOCK_COMMON | frozenset((
-	'option', 'effect', 'tooltip', 'success', 'fail', 'abort', 'random', 'then', 'on_success', 'on_fail',
+EFFECT_CONTEXT_SCOPES = frozenset((
+	'immediate', 'option', 'after', 'effect', 'hidden_effect', 'tooltip',
+	'success', 'fail', 'abort', 'while', 'random_list', 'random', 'then', 'on_success', 'on_fail',
 ))
 
 TRIGGER_QUANTIFIER_RE = re.compile(r'^(any_|count_)')
@@ -1410,7 +1406,7 @@ def _body_node_hint(node, depth=0):
 	if not isinstance(val, list):
 		if low in TRIGGER_ONLY_KEYWORDS or low.startswith(TRIGGER_KEY_PREFIXES):
 			return 'trigger'
-		if low.startswith(EFFECT_KEY_PREFIXES) or low.endswith('_event') or low in EFFECT_BLOCK_KEYS or low in EFFECT_KEY_KEYWORDS:
+		if low.startswith(EFFECT_KEY_PREFIXES) or low.endswith('_event') or low in EFFECT_KEY_KEYWORDS:
 			return 'effect'
 		return None
 	children = [c for c in val if c.get('type') == 'node']
@@ -1423,7 +1419,7 @@ def _body_node_hint(node, depth=0):
 	if _is_known_scope(key):
 		return _body_scan_hint(children, depth + 1)
 	if (key in EFFECT_CONTEXT_SCOPES or low.endswith('_effect') or EFFECT_QUANTIFIER_RE.match(key)
-		or key in EFFECT_BLOCK_KEYS or low.startswith(EFFECT_KEY_PREFIXES)):
+		or low.startswith(EFFECT_KEY_PREFIXES)):
 		# An effect container ('every_*', 'random_*', 'immediate', ...) is effect script no
 		# matter what its inner 'limit' holds - do not look inside it.
 		return 'effect'
