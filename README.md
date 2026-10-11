@@ -141,14 +141,16 @@ limit = {
 }
 ```
 
-### 5\. Conditional ⇄ OR Conversion (optional, off by default)
+### 5\. Conditional Conversions (optional, beta, off by default)
 
-The conditional rewrites described in [section 4](#4-advanced-logic-optimization-nand) are behind their own setting, because they change how a script *reads*, not just how it is formatted. Enable them with `paradox-formatter.ifElseOrConversion`:
+The conditional rewrites described in [section 4](#4-advanced-logic-optimization-nand) are behind their own setting, because they change how a script *reads*, not just how it is formatted. Enable them with `paradox-formatter.conditionalConversions`:
+
+**Beta.** The group is still being tuned: it can reorder conditionals and rewrite them between forms, so review the result before keeping it.
 
 ```jsonc
 // .vscode/settings.json
 {
-    "paradox-formatter.ifElseOrConversion": true   // default: false
+    "paradox-formatter.conditionalConversions": true   // default: false
 }
 ```
 
@@ -157,12 +159,15 @@ The conditional rewrites described in [section 4](#4-advanced-logic-optimization
 | `if` → `OR` | `if = { limit = L body }` becomes `OR = { NOT = { L } body }` (`L` implies `body`). |
 | `if`/`else` → `OR` | an `if` with an empty body followed by `else = { B }` is `L OR B` (an empty body is true), so the pair collapses into a single `OR`. |
 | `OR` → `if`/`else` | `OR = { AND = { A ...B } AND = { NOT = { A } ...C } }` becomes `if = { limit = { A } ...B } else = { ...C }`, which evaluates `A` only once. |
+| `if`/`if` → `if`/`else_if` | when the second `if`'s limit is the full negation of one condition of the first (`limit = { A B }` then `limit = { NOT = { A } }`), the second moves in front and the first becomes an `else_if` without `A` - so the trigger leaf `A` is evaluated once, by the `if`. |
 
-With the setting off - the default - none of the three runs: a trigger `if` keeps its `if`, and complementary `OR` branches keep their `OR`. Everything else is unaffected, in particular the NAND/NOR merging, the `scope?` folding, the NOR repair and the effect-side `if`/`else_if` → `else` fold. The setting is independent of `paradox-formatter.safeNavigation` and applies to whole-document formatting and to selections alike. The standalone `bin/logic_optimizer.py` script (used by tools like `mod-updater4.4.py`) defaults the conversion **on**; only the extension defaults it off.
+With the setting off - the default - none of them runs: a trigger `if` keeps its `if`, complementary `OR` branches keep their `OR`, and an `if`/`if` pair keeps its form. Everything else is unaffected, in particular the NAND/NOR merging, the `scope?` folding, the NOR repair and the effect-side `if`/`else_if` → `else` fold. The setting is independent of `paradox-formatter.safeNavigation` and applies to whole-document formatting and to selections alike. The standalone `bin/logic_optimizer.py` script (used by tools like `mod-updater4.4.py`) defaults the conversions **on**; only the extension defaults them off.
+
+The `if`/`if` → `if`/`else_if` reorder only runs on the effect side (a trigger `if` is read as the implication shorthand), only for a directly following `if` whose limits carry no comments, and only when the two bodies are mutually exclusive - which is exactly the negated-condition case.
 
 As with the rest of the aggressive scope handling, these rewrites assume every scope exists, which is why they are opt-in rather than always on.
 
-  * Regression test: `node test/extension_ifelseor_flag.test.js` (asserts the setting reaches the Python tool as `--if-else-or`).
+  * Regression test: `node test/extension_conditional_conversions.test.js` (asserts the setting reaches the Python tool as `--conditional-conversions`).
 
 ### 6. Format All Files
 You can trigger a bulk formatting operation across all open files or the entire workspace using the `PDX Formatter: Format all files` command.

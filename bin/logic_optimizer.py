@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.6.3"
+__version__ = "0.6.4"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -31,15 +31,19 @@ USE_SAFE_NAVIGATION = False # v4.4: legacy flag, True = fold, False = revert
 # None keeps the legacy behaviour driven by USE_SAFE_NAVIGATION.
 SAFE_NAVIGATION_MODE = None
 _ACTIVE_SAFE_NAV = 'fold' # resolved per document in process_text()
-# Conditional <-> OR conversion. On by default here, because the script is also imported as a
-# standalone utility by other tools (mod-updater4.4.py); the VS Code extension turns it off by
-# default through its 'paradox-formatter.ifElseOrConversion' setting (or --if-else-or):
+# Conditional rewrites, BETA. On by default here, because the script is also imported as a
+# standalone utility by other tools (mod-updater4.4.py); the VS Code extension turns them off
+# by default through its 'paradox-formatter.conditionalConversions' setting (or
+# --conditional-conversions on the command line):
 #   * a trigger 'if = { limit = L body }' becomes the implication 'OR = { NOT = { L } body }'
-#     (an empty-bodied 'if' plus a following 'else' becomes one OR), and
+#     (an empty-bodied 'if' plus a following 'else' becomes one OR),
 #   * complementary OR branches 'OR = { AND = { A B } AND = { NOT = { A } C } }' fold back
-#     into 'if = { limit = { A } B } else = { C }'.
-# With it off, conditionals are left in the form they were written in.
-IF_ELSE_OR_CONVERSIONS = True
+#     into 'if = { limit = { A } B } else = { C }', and
+#   * a conditional whose limit negates one conjunct of the previous 'if' moves in front of it
+#     and turns that 'if' into an 'else_if' without the negated conjunct - 'A B' followed by
+#     'not A' becomes 'if not A ... else_if B ...', which drops a trigger leaf.
+# With them off, conditionals are left in the form they were written in.
+CONDITIONAL_CONVERSIONS = True
 
 def configure_for_stellaris_version(version_nr):
 	"""
@@ -137,10 +141,10 @@ KEYWORDS_TO_UPPER.add('AND')
 NON_NEGATABLE_SCOPES = ( 'if', 'else_if', 'else', 'while', 'switch', 'inverted_switch', 'calc_true_if' ) # , 'trigger', 'limit'
 # Scopes where only trigger conditions are evaluated (IF effects are NOT valid here)
 TRIGGER_CONTEXT_SCOPES = {
-	'limit', 'potential', 'allow', 'trigger', 'destroy_trigger',
+	'limit', 'potential', 'allow', 'trigger',
 	'NOR', 'NAND', 'NOT', 'OR', 'AND',
 	'modifier', 'ai_weight', 'weight_modifier', 'calc_true_if',
-	"possible", "abort_trigger", "visible", "valid", 'hidden_trigger',
+	"possible", "visible", "valid", # "abort_trigger", 'destroy_trigger', 'hidden_trigger',
 }
 # 'has_owner = yes' does not name a scope, so it can only be folded into a directly
 # following owner-like scope block. Every entry must be a scope link that exists
@@ -151,7 +155,7 @@ HAS_OWNER_SCOPE_GUARDS = ('owner', 'space_owner')
 # to stay, either as 'scope? = { ... }' or by keeping the block inside the NOT.
 ALWAYS_PRESENT_SCOPES = ('root', 'this')
 # Containers whose children are ORed: a guard inside them does not cover its siblings.
-GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'calc_true_if')
+GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'NOT', 'calc_true_if')
 # Positive evidence that script can only be trigger script, used to recognise a trigger
 # conditional inside a container we know nothing about (scripted triggers and similar).
 # Comparisons exist only in triggers, and these names/prefixes are trigger-only; anything
@@ -159,7 +163,6 @@ GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'calc_true_if')
 TRIGGER_COMPARISON_OPS = ('>', '>=', '<', '<=', '!=')
 TRIGGER_ONLY_KEYWORDS = ('exists', 'fail_text') # 'count', 'value',
 TRIGGER_KEY_PREFIXES = ("is_", "has_", "any_", "can_","num_", 'all_', "check_", "allows_", "allowed_", "was_", "exists", "years_passed", "count_")
-TRIGGER_GUESS_BLOCK_KEYS = ('if', 'else_if', 'else')
 
 # Effect verbs and effect containers: a conditional body holding one of these can never be
 # trigger script, so the trigger guess stops there and leaves the conditional as written.
@@ -167,7 +170,8 @@ EFFECT_KEY_PREFIXES = (
 	'set_', 'add_', 'remove_', 'change_', 'kill_', 'give_', 'clear_', 'enable_', 'disable_',
 	'activate_', 'deactivate_', 'destroy_', 'create_', 'launch_', 'spawn_', 'play_', 'queue_',
 	'unlock_', 'lock_', 'steal_', 'reverse_', 'research_', 'establish_', 'cancel_', 'begin_',
-	'end_', 'close_', 'open_', 'declare_', 'random_',  'start_', 'stop_', 'apply_', 'pop_', 'switch_', 'multiply_', 'divide_', 'save_',
+	'end_', 'close_', 'open_', 'declare_', 'start_', 'stop_', 'apply_', 'pop_',
+	'switch_', 'multiply_', 'divide_', 'save_', 'export_'
 )
 EFFECT_KEY_KEYWORDS = ('log', 'order_by', 'position', 'weights')
 # A conditional holding one of these is never rewritten as an OR: tooltips work in both
@@ -178,21 +182,13 @@ IF_IMPLICATION_EXCEPTION_KEYS = ('custom_tooltip', 'text')
 # into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
 # same conditional means 'L implies body' and has to become an OR instead.
 EFFECT_CONTEXT_SCOPES = frozenset((
-	'immediate', 'option', 'after', 'effect', 'hidden_effect', 'tooltip',
-	'success', 'fail', 'abort', 'while', 'random_list', 'random', 'then', 'on_success', 'on_fail',
+	'immediate', 'option', 'after', 'effect', 'tooltip',
+	'success', 'fail', 'abort', 'while', 'random_list', 'random', 'then', # 'on_success', 'on_fail', 'hidden_effect',
 ))
 
-TRIGGER_QUANTIFIER_RE = re.compile(r'^(any_|count_)')
-EFFECT_QUANTIFIER_RE = re.compile(r'^(every_|ordered_)')
+TRIGGER_QUANTIFIER = ('any_', 'count_')
+EFFECT_QUANTIFIER = ('every_', 'ordered_', 'random_')
 # NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
-
-# SAFE_MERGE_PARENTS = {
-# 	'AND', 'NAND', 'NOT',
-# 	'trigger', 'limit', 'potential', 'allow', 'pre_triggers',
-# 	'if', 'else_if', 'else', 'while',
-# 	'effect', 'immediate', 'init_effect',
-# 	'modifier', 'ai_weight', 'weight_modifier'
-# }
 
 SCOPES_RE = re.compile(f"^(?:{SCOPES})$")
 
@@ -308,7 +304,7 @@ def _negate_numerical_comparison_recursively(node, dry_run=False, guaranteed_sco
 		# --- RECURSIVE STEP ---
 		# This is a "deep" search down a chain of single-child nodes.
 		# Recurse only if there's a single child and the current node is just a wrapper.
-		if len(children) == 1 and not key.startswith(('any_', 'count_')) and key not in NON_NEGATABLE_SCOPES and not _is_safe_nav_key(key):
+		if len(children) == 1 and not key.startswith(TRIGGER_QUANTIFIER) and key not in NON_NEGATABLE_SCOPES and not _is_safe_nav_key(key):
 			# Every scope is assumed to exist, so a scope block is walked into like any
 			# other wrapper ('not(X and A)' becomes 'X and not A').
 			return _negate_numerical_comparison_recursively(children[0], dry_run, guaranteed_scopes)
@@ -986,9 +982,9 @@ def _scope_context_for_key(key, inherited):
 	"""Context of a key's children: 'trigger', 'effect' or the inherited value."""
 	key_str = str(key)
 	key_low = key_str.lower()
-	if key_str in TRIGGER_CONTEXT_SCOPES or TRIGGER_QUANTIFIER_RE.match(key_str) or key_low.endswith('_trigger'):
+	if key_str in TRIGGER_CONTEXT_SCOPES or key_str.startswith(TRIGGER_QUANTIFIER) or key_low.endswith('trigger'):
 		return 'trigger'
-	if key_str in EFFECT_CONTEXT_SCOPES or EFFECT_QUANTIFIER_RE.match(key_str) or key_low.endswith('_effect'):
+	if key_low in EFFECT_CONTEXT_SCOPES or key_low.startswith(EFFECT_QUANTIFIER) or key_low.endswith('effect') or key_low.startswith('on_'):
 		return 'effect'
 	return inherited
 
@@ -1358,10 +1354,9 @@ def _looks_like_trigger_node(node, depth=0):
 	children = [c for c in val if c.get('type') == 'node']
 	if not children:
 		return False
-	if (key in TRIGGER_GUESS_BLOCK_KEYS or key in TRIGGER_CONTEXT_SCOPES or low.endswith('_trigger')
-			or TRIGGER_QUANTIFIER_RE.match(key) is not None or _is_known_scope(key)):
-		# Logic, trigger containers, quantifiers and scopes: the children have to be
-		# trigger script as well.
+	if (key in TRIGGER_CONTEXT_SCOPES or low.endswith('trigger')
+			or low.startswith(TRIGGER_QUANTIFIER) or _is_known_scope(key)):
+		# Logic, trigger containers, quantifiers and scopes: the children have to be trigger script as well.
 		return all(_looks_like_trigger_node(child, depth + 1) for child in children)
 	return False
 
@@ -1398,7 +1393,7 @@ def _body_node_hint(node, depth=0):
 	if node.get('type') != 'node' or depth > 6:
 		return None
 	key = str(node.get('key', ''))
-	low = key.lower()
+	key_low = key.lower()
 	op = node.get('op')
 	val = node.get('val')
 	# Cheap negation test (an effect body never holds one): NOT/NOR/NAND, '!=', '= no',
@@ -1409,22 +1404,19 @@ def _body_node_hint(node, depth=0):
 	if op in TRIGGER_COMPARISON_OPS:
 		return 'trigger'
 	if not isinstance(val, list):
-		if low in TRIGGER_ONLY_KEYWORDS or low.startswith(TRIGGER_KEY_PREFIXES):
+		if key_low in TRIGGER_ONLY_KEYWORDS or key_low.startswith(TRIGGER_KEY_PREFIXES):
 			return 'trigger'
-		if low.startswith(EFFECT_KEY_PREFIXES) or low.endswith('_event') or low in EFFECT_KEY_KEYWORDS:
+		if key_low.startswith(EFFECT_KEY_PREFIXES) or key_low.endswith('event') or key_low in EFFECT_KEY_KEYWORDS:
 			return 'effect'
 		return None
 	children = [c for c in val if c.get('type') == 'node']
-	if key in TRIGGER_GUESS_BLOCK_KEYS:
-		# 'if'/'else_if'/'else' is the effect conditional chain, never trigger evidence.
-		return 'effect'
-	if key in TRIGGER_CONTEXT_SCOPES or low.endswith('_trigger') \
-		or TRIGGER_QUANTIFIER_RE.match(key):
+	# if key in ('if', 'else_if', 'else'): return 'effect' # is the effect conditional chain, never trigger evidence.
+	if key in TRIGGER_CONTEXT_SCOPES or key_low.endswith('trigger') or key_low.startswith(TRIGGER_QUANTIFIER):
 		return _body_scan_hint(children, depth + 1)
 	if _is_known_scope(key):
 		return _body_scan_hint(children, depth + 1)
-	if (key in EFFECT_CONTEXT_SCOPES or low.endswith('_effect') or EFFECT_QUANTIFIER_RE.match(key)
-		or low.startswith(EFFECT_KEY_PREFIXES)):
+	if (key_low in EFFECT_CONTEXT_SCOPES or key_low.endswith('effect') or key_low.startswith('on_')
+		or key_low.startswith(EFFECT_QUANTIFIER) or key_low.startswith(EFFECT_KEY_PREFIXES)):
 		# An effect container ('every_*', 'random_*', 'immediate', ...) is effect script no
 		# matter what its inner 'limit' holds - do not look inside it.
 		return 'effect'
@@ -1571,14 +1563,15 @@ def _or_to_if_else(or_node):
 def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None, if_implication_context=None):
 	changed_any = False
 	# Inside an 'allow'-like trigger block a conditional is rewritten as an OR implication.
-	in_if_implication = bool(if_implication_context) or str(parent_key or '') in TRIGGER_CONTEXT_SCOPES
+	parent_key = str(parent_key or '')
+	in_if_implication = bool(if_implication_context) or parent_key in TRIGGER_CONTEXT_SCOPES
 	# Scopes an enclosing conjunctive list already asserts exist ('exists = X',
 	# 'X? = { ... }'). A negation may only be pushed into a scope block when the scope
 	# is known to be there, otherwise the block has to keep its own existence check.
 	guaranteed = set(guaranteed_scopes or ())
 	if (parent_key not in GUARD_INHERIT_BLOCKED
-			and not TRIGGER_QUANTIFIER_RE.match(str(parent_key or ''))
-			and not EFFECT_QUANTIFIER_RE.match(str(parent_key or ''))):
+			and not parent_key.startswith(TRIGGER_QUANTIFIER)
+			and not parent_key.startswith(EFFECT_QUANTIFIER)):
 		# In an ANDed list every child has to hold, so a guard anywhere in the list
 		# covers its siblings too. Inside OR/NOR/quantifier lists the children are
 		# ORed or counted instead, and a guard proves nothing about its siblings.
@@ -1896,7 +1889,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	trigger_container = in_if_implication and scope_context == 'trigger'
 	# 'scope_context == trigger' also covers containers named '*_trigger', and None means
 	# we know nothing about the container at all (a plain custom block).
-	if IF_ELSE_OR_CONVERSIONS and (trigger_container or scope_context in (None, 'trigger')):
+	if CONDITIONAL_CONVERSIONS and (trigger_container or scope_context in (None, 'trigger')):
 		idx = 0
 		while idx < len(node_list):
 			node = node_list[idx]
@@ -1933,7 +1926,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	# above skips a conditional that has a following else).
 	i = 0
 	# Only runs with the conditional <-> OR conversion enabled.
-	while IF_ELSE_OR_CONVERSIONS and i < len(node_list):
+	while CONDITIONAL_CONVERSIONS and i < len(node_list):
 		or_node = node_list[i]
 		if or_node.get('type') != 'node' or or_node.get('key') != 'OR':
 			i += 1
@@ -2006,12 +1999,89 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			if any(c.get('type') == 'comment' for c in limit_node.get('val', [])):
 				i += 1
 				continue
+			# TODO: if IF exclude exists = event_target: trigger
 			nxt['key'] = 'else'
 			nxt['val'] = second['body']
 			nxt.pop('_fp', None)
 			changed_any = True
 			print("Folded opposite conditional into else", file=sys.stderr)
 			i = j + 1
+
+	# --- IF/IF CHAIN: the second conditional negates one conjunct of the first -----------------
+	# 'if = { limit = { A B } body1 }' + 'if = { limit = { NOT = { A } } body2 }': A and its
+	# negation are complementary, so the second conditional can move in front and the first
+	# becomes 'else_if' without A. That drops the trigger leaf A (it is evaluated once, by the
+	# 'if') and reads as one chain. Effect-side only, like the else fold above, and only with
+	# the conditional conversions on: reordering effect execution is safe only because the two
+	# bodies are mutually exclusive.
+	if CONDITIONAL_CONVERSIONS and scope_context in (None, 'effect'):
+		i = 0
+		while i < len(node_list):
+			first_cond = node_list[i]
+			if (first_cond.get('type') != 'node' or first_cond.get('op') != '='
+					or first_cond.get('key') != 'if'):
+				i += 1
+				continue
+			if scope_context is None and _if_condition_guesses_trigger(first_cond):
+				i += 1
+				continue
+			first = _conditional_limit_and_body(first_cond)
+			# A single condition means the negated case is the plain 'else' fold above.
+			if first is None or len(first['limit']) < 2:
+				i += 1
+				continue
+			# Only an immediately following 'if' - moving across comments would re-attach them.
+			if i + 1 >= len(node_list) or node_list[i + 1].get('type') != 'node':
+				i += 1
+				continue
+			second_cond = node_list[i + 1]
+			if second_cond.get('op') != '=' or second_cond.get('key') != 'if':
+				i += 1
+				continue
+			if scope_context is None and _if_condition_guesses_trigger(second_cond):
+				i += 1
+				continue
+			second = _conditional_limit_and_body(second_cond)
+			# The negating conditional must be the whole condition ('not A', not 'not A and x'),
+			# and it has to have a body to take the 'if' of the chain.
+			if second is None or len(second['limit']) != 1:
+				i += 1
+				continue
+			if not any(c.get('type') == 'node' for c in second['body']):
+				i += 1
+				continue
+			negated_idx = -1
+			for idx, cond in enumerate(first['limit']):
+				if _limits_are_negations([cond], second['limit']):
+					negated_idx = idx
+					break
+			if negated_idx == -1:
+				i += 1
+				continue
+			# A following 'else_if'/'else' belongs to the second conditional and would be
+			# orphaned once that one becomes the 'if' of the chain.
+			if _has_following_else(node_list, i + 1):
+				i += 1
+				continue
+			# The limit loses a condition, so nothing there may carry a comment.
+			if any(n.get(meta) for n in (first['limit_node'], second['limit_node'], first_cond, second_cond)
+					for meta in ('_cm_open', '_cm_inline', '_cm_close')):
+				i += 1
+				continue
+			if any(c.get('type') == 'comment'
+					for c in first['limit_node'].get('val', []) + second['limit_node'].get('val', [])):
+				i += 1
+				continue
+			negated_leaf = first['limit'][negated_idx]
+			first['limit_node']['val'] = [c for c in first['limit_node']['val'] if c is not negated_leaf]
+			first_cond['key'] = 'else_if'
+			first_cond.pop('_fp', None)
+			second_cond.pop('_fp', None)
+			node_list[i], node_list[i + 1] = node_list[i + 1], node_list[i]
+			changed_any = True
+			print(f"Reordered if/if into if/else_if (dropped trigger leaf {negated_leaf.get('key', '')})", file=sys.stderr)
+			i += 2
+
 
 	# --- REPAIR 'NOR = { exists = X  X = { C.. } }' ---
 	# That leftover is always false while X exists, so the script it came from can only have
@@ -2096,7 +2166,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	# temporary OR wrapper built while merging NOR blocks - the two nodes are ORed, so
 	# folding them into 'scope?' would turn 'exists OR scope' into 'exists AND scope'.
 	# 'calc_true_if' counts its entries.
-	if _ACTIVE_SAFE_NAV == 'fold' and parent_key not in ('OR', 'NOR', 'NOT', 'calc_true_if'):
+	if _ACTIVE_SAFE_NAV == 'fold' and parent_key not in GUARD_INHERIT_BLOCKED:
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
@@ -2108,7 +2178,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					guard_scopes = (guard_scope,)
 			elif (node['type'] == 'node' and guard_key == 'has_owner' and node.get('op') == '='
 					and str(node.get('val', '')).lower() == 'yes'
-					and parent_key not in ('OR', 'NOR', 'NOT', 'calc_true_if')):
+					and parent_key not in GUARD_INHERIT_BLOCKED):
 				# 'has_owner = yes' names no scope, so it may only be folded into a directly
 				# following owner-like block (HAS_OWNER_SCOPE_GUARDS) and only in a
 				# conjunctive list, where 'guard AND scope' really is 'scope?'.
@@ -2452,7 +2522,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					if cm_inline:
 						scope_node['_cm_inline'] = cm_inline
 
-					if parent_key in ('OR', 'NOR', 'NOT', 'calc_true_if'):
+					if parent_key in GUARD_INHERIT_BLOCKED:
 						and_node = {'key': 'AND', 'op': '=', 'val': [exists_node, scope_node], 'type': 'node'}
 						node_list[i:i+1] = [and_node]
 					else:
@@ -3190,7 +3260,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 									elif '_cm_close' in node: del node['_cm_close']
 									changed_any = True
 									print("Created NOR from NOT-scope-OR", file=sys.stderr)
-								elif grandchild.get('val') == 'yes' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(('any_', 'count_')) and not _is_safe_nav_key(child_key):
+								elif grandchild.get('val') == 'yes' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(TRIGGER_QUANTIFIER) and not _is_safe_nav_key(child_key):
 									grandchild['val'] = 'no'
 
 									# Hoist child up to replace the NOT node
@@ -3206,7 +3276,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 									elif '_cm_close' in node: del node['_cm_close']
 
 									changed_any = True
-								elif grandchild.get('val') == 'no' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(('any_', 'count_')):
+								elif grandchild.get('val') == 'no' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(TRIGGER_QUANTIFIER):
 									grandchild['val'] = 'yes'
 
 									# Hoist child up to replace the NOT node
@@ -3229,7 +3299,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 								# `any_`/`count_` a NOT changes what the block means, so those keep
 								# their shape (and never reach this branch anyway).
 								elif (grandchild.get('key') == 'NOT' and isinstance(grandchild.get('val'), list)
-										and _is_known_scope(child_key) and not child_key.startswith(('any_', 'count_'))
+										and _is_known_scope(child_key) and not child_key.startswith(TRIGGER_QUANTIFIER)
 										and child_key not in NON_NEGATABLE_SCOPES and not _is_safe_nav_key(child_key)
 										# both NOT nodes disappear, so a comment attached to either one
 										# would be lost - leave such a block alone then. comments on the
@@ -4078,8 +4148,8 @@ if __name__ == "__main__":
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--no-compact", action="store_true", help="Disable compacting of nodes")
-	parser.add_argument("--if-else-or", action="store_true",
-					help="Enable the conditional <-> OR conversion (trigger 'if' implication and complementary OR branches); off by default")
+	parser.add_argument("--conditional-conversions", action="store_true",
+					help="Enable the (BETA) conditional rewrites: trigger 'if' implication, complementary OR branches and the if/if -> if/else_if reorder; off by default")
 	parser.add_argument("--safe-navigation", choices=('auto', 'fold', 'revert', 'ignore'), default=None,
 						help="Safe navigation handling: auto (mirror the file's style), fold, revert or ignore")
 	parser.add_argument("--use-safe-navigation", action="store_true", help="Legacy alias for --safe-navigation fold")
@@ -4089,7 +4159,7 @@ if __name__ == "__main__":
 
 	NO_COMPACT = args.no_compact
 	SAFE_NAVIGATION_MODE = args.safe_navigation
-	IF_ELSE_OR_CONVERSIONS = args.if_else_or
+	CONDITIONAL_CONVERSIONS = args.conditional_conversions
 	if SAFE_NAVIGATION_MODE is None and args.use_safe_navigation:
 		USE_SAFE_NAVIGATION = True
 
