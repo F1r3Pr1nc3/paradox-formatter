@@ -1226,6 +1226,32 @@ def _has_following_else(node_list, idx):
 	return False
 
 
+def _ends_with_break_yes(cond_node):
+	"""True when the last node child of the conditional is 'break = yes'."""
+	children = cond_node.get('val')
+	if not isinstance(children, list):
+		return False
+	nodes = [c for c in children if c.get('type') == 'node']
+	if not nodes:
+		return False
+	last = nodes[-1]
+	val = last.get('val')
+	return (str(last.get('key', '')) == 'break' and last.get('op') == '='
+		and not isinstance(val, list) and str(val).lower() == 'yes')
+
+
+def _remove_trailing_break(cond_node):
+	"""Drop the trailing 'break = yes' node from the conditional."""
+	children = cond_node.get('val')
+	if not isinstance(children, list):
+		return
+	nodes = [c for c in children if c.get('type') == 'node']
+	if not nodes:
+		return
+	last = nodes[-1]
+	cond_node['val'] = [c for c in children if c is not last]
+
+
 def _dead_nor_scope_block(node):
 	"""Recognise the broken 'NOR = { exists = X  X = { C.. } }' leftover.
 
@@ -1560,7 +1586,7 @@ def _or_to_if_else(or_node):
 
 
 
-def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None, if_implication_context=None):
+def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None, if_implication_context=None, break_is_local=True):
 	changed_any = False
 	# Inside an 'allow'-like trigger block a conditional is rewritten as an OR implication.
 	parent_key = str(parent_key or '')
@@ -2083,6 +2109,103 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			i += 2
 
 
+	# --- 'break = yes' is a stop: the rest of the block becomes the 'not A' side -----------------
+	# 'if = { limit = A  body  break = yes } <rest>' runs 'body' and stops the block while A
+	# holds, and runs <rest> while it does not - so <rest> really is the else side. Early
+	# Stellaris had no 'else_if', so the idiom is everywhere ('on_action_events_1.txt',
+	# 'horizonsignal_events.txt'). <rest> takes the cheapest fitting shape:
+	#   * a run of 'break' conditionals reaching the block end -> an 'else_if' chain,
+	#   * nothing -> the trailing 'break' is simply redundant,
+	#   * an 'else' already there -> what follows belongs inside it, and
+	#   * otherwise the 'not A' side: an empty body negates the condition
+	#     ('if = { limit = { NOT = { A } } <rest> }'), a non-empty body keeps the 'else' form.
+	# Effect-side only, and only while the stop is local: inside a 'while' the same 'break' ends
+	# the loop, and inside an 'inline_script' the rest of the block belongs to the caller.
+	if CONDITIONAL_CONVERSIONS and scope_context in (None, 'effect') and break_is_local:
+		i = 0
+		while i < len(node_list):
+			cond = node_list[i]
+			if (cond.get('type') != 'node' or cond.get('op') != '='
+					or cond.get('key') not in ('if', 'else_if')
+					or not _ends_with_break_yes(cond)):
+				i += 1
+				continue
+			if scope_context is None and _if_condition_guesses_trigger(cond):
+				i += 1
+				continue
+			# the run of 'break' conditionals directly after this one
+			run = []
+			k = i + 1
+			while (k < len(node_list) and node_list[k].get('type') == 'node'
+					and node_list[k].get('op') == '='
+					and node_list[k].get('key') in ('if', 'else_if')
+					and _ends_with_break_yes(node_list[k])):
+				run.append(k)
+				k += 1
+			rest = node_list[k:]
+			if run and not any(c.get('type') == 'node' for c in rest):
+				# a dispatch chain: every branch stops and nothing else follows it
+				_remove_trailing_break(cond)
+				cond.pop('_fp', None)
+				for m in run:
+					_remove_trailing_break(node_list[m])
+					node_list[m]['key'] = 'else_if'
+					node_list[m].pop('_fp', None)
+				changed_any = True
+				print("Turned a 'break' dispatch chain into if/else_if", file=sys.stderr)
+				i = k
+				continue
+			if (k < len(node_list) and node_list[k].get('type') == 'node'
+					and str(node_list[k].get('key', '')) == 'else'):
+				# the conditional already carries an else, and everything after it belongs there
+				if any(c.get('type') == 'node' for c in node_list[k + 1:]):
+					print("WARNING: an else after 'break = yes' with script following - moving that script into the else", file=sys.stderr)
+					else_node = node_list[k]
+					else_node['val'] = list(else_node.get('val', [])) + list(node_list[k + 1:])
+					else_node.pop('_fp', None)
+					del node_list[k + 1:]
+				_remove_trailing_break(cond)
+				cond.pop('_fp', None)
+				changed_any = True
+				print("Removed a redundant 'break = yes' in front of an else", file=sys.stderr)
+				i += 1
+				continue
+			if not any(c.get('type') == 'node' for c in rest):
+				_remove_trailing_break(cond)
+				cond.pop('_fp', None)
+				changed_any = True
+				print("Removed a redundant trailing 'break = yes'", file=sys.stderr)
+				i += 1
+				continue
+			limit_node = None
+			for child in cond.get('val', []):
+				if child.get('type') == 'node' and child.get('key') == 'limit':
+					limit_node = child
+					break
+			if limit_node is None:
+				i += 1
+				continue
+			body_nodes = [c for c in cond.get('val', [])
+					if c.get('type') == 'node' and c is not limit_node and c.get('key') != 'break']
+			if not body_nodes:
+				# only the 'break' was there: negate the condition and keep the rest in the body
+				limit_node['val'] = [{'key': 'NOT', 'op': '=', 'val': list(limit_node.get('val', [])), 'type': 'node'}]
+				_remove_trailing_break(cond)
+				cond['val'] = list(cond.get('val', [])) + list(rest)
+				cond.pop('_fp', None)
+				del node_list[k:]
+				changed_any = True
+				print("Negated a 'break' guard onto the script that follows it", file=sys.stderr)
+				i += 1
+				continue
+			# a non-empty body keeps the else form: 'if A { body } else = { <rest> }'
+			_remove_trailing_break(cond)
+			cond.pop('_fp', None)
+			node_list[k:] = [{'key': 'else', 'op': '=', 'val': list(rest), 'type': 'node'}]
+			changed_any = True
+			print("Moved the script after 'break = yes' into an else", file=sys.stderr)
+			i += 1
+
 	# --- REPAIR 'NOR = { exists = X  X = { C.. } }' ---
 	# That leftover is always false while X exists, so the script it came from can only have
 	# been the guarded, negated block: 'X? = { NOT = { C.. } }' (the tool wrote the broken
@@ -2591,7 +2714,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				continue
 			else:
 				child_context = _scope_context_for_key(key, scope_context)
-				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context, guaranteed_scopes=guaranteed, if_implication_context=in_if_implication)
+				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context, guaranteed_scopes=guaranteed, if_implication_context=in_if_implication, break_is_local=break_is_local and str(key) not in ('while', 'inline_script'))
 			if child_changed:
 				node['val'] = optimized_children; changed_any = True
 
