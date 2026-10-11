@@ -1252,6 +1252,21 @@ def _remove_trailing_break(cond_node):
 	cond_node['val'] = [c for c in children if c is not last]
 
 
+def _mentions_event_target_exists(nodes, depth=0):
+	"""True when a limit uses 'exists = event_target:...' anywhere in it."""
+	if depth > 8:
+		return False
+	for node in nodes:
+		if node.get('type') != 'node':
+			continue
+		if str(node.get('key', '')) == 'exists' and str(node.get('val', '')).startswith('event_target:'):
+			return True
+		val = node.get('val')
+		if isinstance(val, list) and _mentions_event_target_exists(val, depth + 1):
+			return True
+	return False
+
+
 def _dead_nor_scope_block(node):
 	"""Recognise the broken 'NOR = { exists = X  X = { C.. } }' leftover.
 
@@ -2025,7 +2040,14 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			if any(c.get('type') == 'comment' for c in limit_node.get('val', [])):
 				i += 1
 				continue
-			# TODO: if IF exclude exists = event_target: trigger
+			# 'exists = event_target:X' is checked again after the first body, which may just have
+			# set (save_event_target_as) or cleared X - so 'not exists X' and 'exists X' are not
+			# complementary there and the second conditional has to stay an 'if'. An 'else_if'
+			# cannot run once the first branch did, so it is safe to fold (see the TODO this
+			# replaces).
+			if nxt.get('key') == 'if' and _mentions_event_target_exists(second['limit']):
+				i += 1
+				continue
 			nxt['key'] = 'else'
 			nxt['val'] = second['body']
 			nxt.pop('_fp', None)
