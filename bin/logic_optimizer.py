@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -2531,11 +2531,11 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 		while i < len(node_list):
 			cond = node_list[i]
 			if (cond.get('type') != 'node' or cond.get('op') != '='
-					or cond.get('key') not in ('if', 'else_if')
+					or cond.get('key') not in ('if', 'else_if', 'else')
 					or not _ends_with_break_yes(cond)):
 				i += 1
 				continue
-			if scope_context is None and _if_condition_guesses_trigger(cond):
+			if scope_context is None and cond.get('key') != 'else' and _if_condition_guesses_trigger(cond):
 				i += 1
 				continue
 			# the run of 'break' conditionals after this one, stepping over comment lines:
@@ -2556,6 +2556,21 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					continue
 				break
 			rest = node_list[k:]
+			if cond.get('key') == 'else':
+				# 'else' is the last link of its chain, so its 'break' can only ever stop the
+				# block the chain sits in: when the chain is the last thing in that block the
+				# 'break' is what the block closing brace already does ('leviathans_events_2.txt'
+				# line 4232). Script after the chain is skipped when the else runs, so a 'break'
+				# in front of it is doing real work and stays - the other readings above are for
+				# a conditional that still has an 'A' to negate, which an 'else' has not.
+				if (len([c for c in cond.get('val', []) if c.get('type') == 'node']) > 1
+						and not any(c.get('type') == 'node' for c in rest)):
+					_remove_trailing_break(cond)
+					cond.pop('_fp', None)
+					changed_any = True
+					print("Removed a trailing 'break = yes' from an else", file=sys.stderr)
+				i += 1
+				continue
 			if run and not any(c.get('type') == 'node' for c in rest):
 				# a dispatch chain: every branch stops and nothing else follows it
 				_remove_trailing_break(cond)
