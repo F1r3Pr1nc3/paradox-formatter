@@ -1780,6 +1780,106 @@ def _xor_members(xor_node):
 	return members
 
 
+def _calc_true_if_node(members, negated=False):
+	"""'calc_true_if' over 'members': 'amount = 1' (exactly one) or 'amount != 1' (not one)."""
+	amount = {'key': 'amount', 'op': '!=' if negated else '=', 'val': '1', 'type': 'node'}
+	children = [copy.deepcopy(m) for m in members]
+	for child in children:
+		child.pop('_fp', None)
+	return {'key': 'calc_true_if', 'op': '=', 'val': [amount] + children, 'type': 'node'}
+
+
+def _or_nand_node(members):
+	"""'AND = { OR = { A B } NAND = { A B } }': 'exactly one' without 'calc_true_if'."""
+	first, second = (copy.deepcopy(m) for m in members)
+	for child in (first, second):
+		child.pop('_fp', None)
+	any_node = {'key': 'OR', 'op': '=', 'val': [first, second], 'type': 'node'}
+	both_node = {'key': 'NAND', 'op': '=', 'val': [copy.deepcopy(first), copy.deepcopy(second)], 'type': 'node'}
+	return {'key': 'AND', 'op': '=', 'val': [any_node, both_node], 'type': 'node'}
+
+
+def _xor_replacements(members, negated):
+	"""What an 'exactly one' pattern becomes, or None when this form cannot express it."""
+	if _ACTIVE_XOR_FORM == 'calc_true_if':
+		return [_calc_true_if_node(members, negated)]
+	if negated or len(members) != 2:
+		# OR/NAND has no spelling for 'not exactly one' nor for three or more members.
+		return None
+	return [_or_nand_node(members)]
+
+
+def _positive_member(node):
+	"""The positive form of a condition, or the condition itself when it is already positive.
+
+	'_get_positive_form' is meant for a node that *is* a negation - handed a plain trigger leaf,
+	it returns nothing at all - so the polarity is decided here first.
+	"""
+	if not _is_negation_node(node):
+		if any(node.get(meta) for meta in ('_cm_open', '_cm_inline', '_cm_close')):
+			return None
+		return node
+	positive = _get_positive_form(node)
+	if len(positive) != 1:
+		return None
+	only = positive[0]
+	if only.get('type') != 'node':
+		return None
+	if any(only.get(meta) for meta in ('_cm_open', '_cm_inline', '_cm_close')):
+		return None
+	return only
+
+
+def _trigger_if_else_xor(node_list, idx):
+	"""The same 'exactly one of {A, B}' pattern written as a trigger 'if'/'else' pair.
+
+	In trigger script 'if = { limit = { A } B } else = { C }' means '(A then B) and (not A then
+	C)', i.e. '(A and B) or (not A and C)'. Once C is the negation of B the pair is a count over
+	the two conditions: with exactly one of 'A'/'B' negated it says 'exactly one of {positive A,
+	positive B}', and with both or neither negated it says the opposite, 'both or neither'. That
+	is the very expression the OR spelling folds into - the shape an earlier build wrote for it -
+	so both spellings come out alike.
+
+	Returns (members, negated), 'negated' True for the 'both or neither' reading, or None when
+	the pair is anything else: a comment in a part the rewrite drops, more than one condition on
+	either side, an 'else_if' behind the 'else', or a repeated member.
+	"""
+	if idx + 1 >= len(node_list):
+		return None
+	if_node = node_list[idx]
+	else_node = node_list[idx + 1]
+	if (else_node.get('type') != 'node' or else_node.get('key') != 'else'
+			or else_node.get('op') != '=' or not isinstance(else_node.get('val'), list)):
+		return None
+	if _has_following_else(node_list, idx + 1):
+		return None
+	for carrier in (if_node, else_node):
+		if any(carrier.get(meta) for meta in ('_cm_open', '_cm_inline', '_cm_close')):
+			return None
+	first = _conditional_limit_and_body(if_node)
+	if first is None or len(first['limit']) != 1:
+		return None
+	body_nodes = [c for c in first['body'] if c.get('type') == 'node']
+	else_nodes = [c for c in else_node['val'] if c.get('type') == 'node']
+	if len(body_nodes) != 1 or len(else_nodes) != 1:
+		return None
+	for part in (if_node.get('val', []), else_node['val'], first['limit_node'].get('val', [])):
+		if any(c.get('type') == 'comment' for c in part):
+			return None
+	condition = first['limit'][0]
+	then_body = body_nodes[0]
+	if not _is_negation(then_body, else_nodes[0]):
+		return None
+	first_member = _positive_member(condition)
+	second_member = _positive_member(then_body)
+	if first_member is None or second_member is None:
+		return None
+	if nodes_are_equal(first_member, second_member):
+		return None
+	# exactly one of the two negated reads as XOR, both or neither as the opposite (XNOR)
+	return [first_member, second_member], _is_negation_node(condition) == _is_negation_node(then_body)
+
+
 def _xor_to_calc_true_if(xor_node, negated=False):
 	"""'OR = { AND = { not A B } AND = { A not B } }' -> 'calc_true_if = { amount = 1 A B }'.
 
@@ -1792,11 +1892,7 @@ def _xor_to_calc_true_if(xor_node, negated=False):
 	members = _xor_members(xor_node)
 	if members is None:
 		return None
-	amount = {'key': 'amount', 'op': '!=' if negated else '=', 'val': '1', 'type': 'node'}
-	children = [copy.deepcopy(m) for m in members]
-	for child in children:
-		child.pop('_fp', None)
-	return {'key': 'calc_true_if', 'op': '=', 'val': [amount] + children, 'type': 'node'}
+	return _calc_true_if_node(members, negated)
 
 
 def _xor_to_or_nand(xor_node, negated=False):
@@ -1812,12 +1908,7 @@ def _xor_to_or_nand(xor_node, negated=False):
 	members = _xor_members(xor_node)
 	if members is None or len(members) != 2:
 		return None
-	first, second = (copy.deepcopy(m) for m in members)
-	for child in (first, second):
-		child.pop('_fp', None)
-	any_node = {'key': 'OR', 'op': '=', 'val': [first, second], 'type': 'node'}
-	both_node = {'key': 'NAND', 'op': '=', 'val': [copy.deepcopy(first), copy.deepcopy(second)], 'type': 'node'}
-	return {'key': 'AND', 'op': '=', 'val': [any_node, both_node], 'type': 'node'}
+	return _or_nand_node(members)
 
 
 
@@ -2235,6 +2326,39 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 		changed_any = True
 		print("Folded complementary OR branches into if/else", file=sys.stderr)
 		i += 2
+
+	# --- 'EXACTLY ONE' WRITTEN AS A TRIGGER IF/ELSE ---------------------------------------------
+	# The same expression the OR arms above fold into, spelled as a conditional pair - the shape
+	# an earlier build of this tool wrote for it, and a shape hand-written files use. In trigger
+	# script 'if = { limit = { A } B } else = { C }' means '(A then B) and (not A then C)', which
+	# counts once C negates B (see '_trigger_if_else_xor'). Only a trigger position folds: in an
+	# effect the pair just runs one of two bodies and has no count reading.
+	if CONDITIONAL_CONVERSIONS and (trigger_container or scope_context in (None, 'trigger')):
+		i = 0
+		while i < len(node_list):
+			node = node_list[i]
+			if node.get('type') != 'node' or node.get('key') != 'if' or node.get('op') != '=':
+				i += 1
+				continue
+			xor = _trigger_if_else_xor(node_list, i)
+			if xor is None:
+				i += 1
+				continue
+			members, negated = xor
+			if scope_context is None and not trigger_container and _body_scan_hint(members) != 'trigger':
+				# Nothing known about the container: the two conditions decide - trigger-only
+				# ones make this the implication shorthand, effect ones an effect conditional.
+				i += 1
+				continue
+			replacement = _xor_replacements(members, negated)
+			if replacement is None:
+				i += 1
+				continue
+			node_list[i:i + 2] = replacement
+			changed_any = True
+			print("Folded an if/else 'exactly one' conditional into "
+					+ ('calc_true_if' if _ACTIVE_XOR_FORM == 'calc_true_if' else 'OR/NAND'), file=sys.stderr)
+			i += len(replacement)
 
 	# --- IF/ELSE CHAIN: drop a conditional whose limit is the opposite of the previous one ---
 	# 'if = { limit = L body1 }' followed by 'if/else_if = { limit = NOT L body2 }' fires
