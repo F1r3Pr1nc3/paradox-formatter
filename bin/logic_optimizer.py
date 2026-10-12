@@ -199,6 +199,13 @@ EFFECT_CONTEXT_SCOPES = frozenset((
 	'success', 'fail', 'abort', 'while', 'random_list', 'random', 'then', # 'on_success', 'on_fail', 'hidden_effect',
 ))
 
+# Containers that start a fresh effect execution: a 'break' can never reach past one of these.
+# Between two of them a 'break' unwinds through the scope blocks around it, so a rewrite that
+# treats the following script as "the else side" is only sound while every container on the way
+# up to one of these ends with the conditional's node ('marauder_events.txt' line 9675, where the
+# 'break' inside 'overlord = { ... }' also skips the country_event behind the enclosing 'if').
+EFFECT_ROOTS = frozenset(('immediate', 'option', 'after', 'effect', 'success', 'fail', 'abort'))
+
 TRIGGER_QUANTIFIER = ('any_', 'count_')
 EFFECT_QUANTIFIER = ('every_', 'ordered_', 'random_')
 # NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
@@ -1311,6 +1318,15 @@ def _has_following_else(node_list, idx):
 		if nxt.get('type') == 'comment':
 			continue
 		return str(nxt.get('key', '')) in ('else', 'else_if')
+	return False
+
+
+def _is_last_script(node_list, node):
+	"""True when 'node' is the last non-comment entry of its list."""
+	for child in reversed(node_list):
+		if child.get('type') == 'comment':
+			continue
+		return child is node
 	return False
 
 
@@ -3245,7 +3261,16 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				continue
 			else:
 				child_context = _scope_context_for_key(key, scope_context)
-				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context, guaranteed_scopes=guaranteed, if_implication_context=in_if_implication, break_is_local=break_is_local and str(key) not in ('while', 'inline_script'))
+				# A 'break' stops the block its conditional sits in and unwinds through the scope
+				# blocks around it, so the rewrites may only treat the following script as the else
+				# side while every container on the way up to a fresh effect execution ends with
+				# this node - otherwise the 'break' reaches further than the list being rewritten
+				# ('marauder_events.txt' line 9675).
+				child_break_local = (
+					str(key) in EFFECT_ROOTS
+					or (break_is_local and str(key) not in ('while', 'inline_script')
+						and _is_last_script(node_list, node)))
+				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context, guaranteed_scopes=guaranteed, if_implication_context=in_if_implication, break_is_local=child_break_local)
 			if child_changed:
 				node['val'] = optimized_children; changed_any = True
 
