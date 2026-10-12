@@ -47,15 +47,15 @@ CONDITIONAL_CONVERSIONS = True
 
 # How the 'exactly one of {A, B}' pattern - 'OR = { AND = { not A B } AND = { A not B } }' -
 # is written once the conversions have recognised it:
-#   'auto'         - mirror the file's own style: the compact 'calc_true_if' form only when the
-#                    document already relies on the modern 'amount >= ...' spelling, otherwise
-#                    the version-safe OR/NAND pair (default),
-#   'calc_true_if' - 'calc_true_if = { amount = 1 A B }': one node instead of three, but
-#                    Stellaris 2.1+ only, because '=' on 'amount' read as 'at least' before
-#                    that (the built-in tooltip said so, and vanilla had no other spelling),
+#   'calc_true_if' - 'calc_true_if = { amount = 1 A B }': one node instead of three (default).
+#                    Stellaris 2.1+ only, because '=' on 'amount' read as 'at least' before that
+#                    (the built-in tooltip said so, and vanilla had no other spelling) - so files
+#                    targeted at an older version want 'or_nand' or 'auto',
 #   'or_nand'      - 'AND = { OR = { A B } NAND = { A B } }': works in every version, but only
-#                    exists for two members - 'at most one of three' has no OR/NAND spelling.
-XOR_FORM = 'auto'
+#                    exists for two members - 'at most one of three' has no OR/NAND spelling,
+#   'auto'         - mirror the file's own style: the compact form when the document already
+#                    relies on the modern 'amount >= ...' spelling, the OR/NAND pair otherwise.
+XOR_FORM = 'calc_true_if'
 _ACTIVE_XOR_FORM = 'calc_true_if' # resolved per document in process_text()
 
 def configure_for_stellaris_version(version_nr):
@@ -1095,7 +1095,7 @@ def _resolve_xor_form(tree):
 	if XOR_FORM == 'auto':
 		# Mirrors the file's own style, like safe navigation: the compact counted form needs
 		# Stellaris 2.1+, so without evidence of that version the OR/NAND pair - which every
-		# version understands - is used instead.
+		# version understands - is used instead. The default is 'calc_true_if' and is used as is.
 		return 'calc_true_if' if _tree_has_modern_calc_true_if(tree) else 'or_nand'
 	return XOR_FORM
 
@@ -4732,7 +4732,7 @@ if __name__ == "__main__":
 	NO_COMPACT = args.no_compact
 	SAFE_NAVIGATION_MODE = args.safe_navigation
 	CONDITIONAL_CONVERSIONS = args.conditional_conversions
-	XOR_FORM = args.xor_form or 'auto'
+	XOR_FORM = args.xor_form or 'calc_true_if'
 	if SAFE_NAVIGATION_MODE is None and args.use_safe_navigation:
 		USE_SAFE_NAVIGATION = True
 

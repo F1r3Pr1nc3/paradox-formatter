@@ -11,7 +11,7 @@
         "FirePrince"
     ],
     "license": "MIT",
-    "version": "0.6.3",
+    "version": "0.6.4",
     "preview": true,
     "repository": {
         "type": "git",
@@ -66,16 +66,16 @@
                 "paradox-formatter.xorForm": {
                     "type": "string",
                     "enum": [
-                        "auto",
                         "calc_true_if",
-                        "or_nand"
+                        "or_nand",
+                        "auto"
                     ],
                     "enumDescriptions": [
-                        "Mirror the file's own style: use the compact 'calc_true_if' only when the document already relies on the modern 'amount >= ...' spelling, otherwise the version-safe OR/NAND pair.",
-                        "Write 'calc_true_if = { amount = 1 ... }' - one node instead of three, for Stellaris 2.1 and later (before that, '=' on 'amount' was read as 'at least').",
-                        "Write 'AND = { OR = { ... } NAND = { ... } }' - understood by every Stellaris version, but only possible for two members."
+                        "Write 'calc_true_if = { amount = 1 ... }' - one node instead of three. For Stellaris 2.1 and later: before that, '=' on 'amount' was read as 'at least'.",
+                        "Write 'AND = { OR = { ... } NAND = { ... } }' - understood by every Stellaris version, but only possible for two members.",
+                        "Mirror the file's own style: the compact 'calc_true_if' only when the document already relies on the modern 'amount >= ...' spelling, the version-safe OR/NAND pair otherwise."
                     ],
-                    "default": "auto",
+                    "default": "calc_true_if",
                     "description": "BETA - how the 'exactly one of {A, B}' pattern ('OR = { AND = { not A B } AND = { A not B } }') is written. Only used when 'paradox-formatter.conditionalConversions' is on."
                 }
             }
