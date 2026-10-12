@@ -46,6 +46,11 @@ function formatWithPythonBridge(text, forceCompact) {
 			args.push('--conditional-conversions');
 		}
 
+		// How a fully written out 'exactly one of {A, B}' is written: 'auto' mirrors the file's
+		// own style (compact 'calc_true_if' only for files that already use the modern
+		// 'amount >= ...' spelling, the version-safe OR/NAND pair otherwise).
+		args.push('--xor-form', String(config.get('xorForm') || 'auto'));
+
 		// 1. Spawn Python process
 		const pythonProcess = spawn(pythonPath, args);
 

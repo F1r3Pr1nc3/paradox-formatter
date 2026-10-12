@@ -45,6 +45,19 @@ _ACTIVE_SAFE_NAV = 'fold' # resolved per document in process_text()
 # With them off, conditionals are left in the form they were written in.
 CONDITIONAL_CONVERSIONS = True
 
+# How the 'exactly one of {A, B}' pattern - 'OR = { AND = { not A B } AND = { A not B } }' -
+# is written once the conversions have recognised it:
+#   'auto'         - mirror the file's own style: the compact 'calc_true_if' form only when the
+#                    document already relies on the modern 'amount >= ...' spelling, otherwise
+#                    the version-safe OR/NAND pair (default),
+#   'calc_true_if' - 'calc_true_if = { amount = 1 A B }': one node instead of three, but
+#                    Stellaris 2.1+ only, because '=' on 'amount' read as 'at least' before
+#                    that (the built-in tooltip said so, and vanilla had no other spelling),
+#   'or_nand'      - 'AND = { OR = { A B } NAND = { A B } }': works in every version, but only
+#                    exists for two members - 'at most one of three' has no OR/NAND spelling.
+XOR_FORM = 'auto'
+_ACTIVE_XOR_FORM = 'calc_true_if' # resolved per document in process_text()
+
 def configure_for_stellaris_version(version_nr):
 	"""
 	Set feature flags based on the Stellaris version being targeted.
@@ -788,6 +801,38 @@ def lowercase_yes_no_values(node_list):
 	return changed
 
 # --- 7. Optimize ---
+def _amount_comparisons_are_negations(a, b):
+	"""'amount = 1' against 'amount != 1' - the same count asked about the complementary way."""
+	opposites = {('=', '!='), ('!=', '='), ('>=', '<'), ('<', '>='), ('>', '<='), ('<=', '>')}
+	if str(a.get('key', '')) != 'amount' or str(b.get('key', '')) != 'amount':
+		return False
+	if str(a.get('val')) != str(b.get('val')):
+		return False
+	return (str(a.get('op')), str(b.get('op'))) in opposites
+
+
+def _opposite_calc_true_if_counts(a, b):
+	"""True for two 'calc_true_if' blocks that differ only in how many members must be true.
+
+	'calc_true_if = { amount = 1 A B }' and 'calc_true_if = { amount != 1 A B }' hold over the
+	same members and are exact opposites, which is what lets the second one of a chain drop its
+	limit. Everything but the 'amount' comparison has to match.
+	"""
+	ca = [c for c in a.get('val', []) if c.get('type') == 'node']
+	cb = [c for c in b.get('val', []) if c.get('type') == 'node']
+	if len(ca) != len(cb) or len(ca) < 2:
+		return False
+	flipped = 0
+	for first, second in zip(ca, cb):
+		if nodes_are_equal(first, second):
+			continue
+		if _amount_comparisons_are_negations(first, second):
+			flipped += 1
+			continue
+		return False
+	return flipped == 1
+
+
 def _is_negation(n1, n2):
 	# Internal helper to check for negation, with recursion guard
 	def _is_negation_recursive(node1, node2, depth=0):
@@ -812,6 +857,13 @@ def _is_negation(n1, n2):
 			not_children = [c for c in node2.get('val', []) if c['type'] == 'node']
 			if len(not_children) == 1 and nodes_are_equal(not_children[0], node1):
 				return True
+
+		# Case 4: two 'calc_true_if' blocks over the same members that ask the count the
+		# complementary way ('amount = 1' vs 'amount != 1'). The members are the whole
+		# condition there, so the amount comparison alone decides they are opposites.
+		if (str(node1.get('key', '')) == 'calc_true_if' and str(node2.get('key', '')) == 'calc_true_if'
+				and _opposite_calc_true_if_counts(node1, node2)):
+			return True
 
 		# Case 3: one is `A = { B = yes }` and other is `A = { B = no }`
 		if node1.get('key') == node2.get('key') and isinstance(node1.get('val'), list) and isinstance(node2.get('val'), list):
@@ -1011,6 +1063,42 @@ def _resolve_safe_navigation_mode(tree):
 		# the rest untouched (there is nothing to revert in a pre-4.4 file anyway).
 		return 'fold' if _tree_has_safe_nav(tree) else 'ignore'
 	return mode
+
+
+def _tree_has_modern_calc_true_if(nodes, depth=0):
+	"""True when the document already uses 'calc_true_if' with an explicit comparator.
+
+	'amount = 1' only means 'exactly one' from Stellaris 2.1 on: before that the comparison
+	was 'at least' and the built-in tooltip said so (localisation: 1.9/2.0 read 'If at least
+	$AMOUNT$ of the following are true', 2.1 onwards 'If $COMPARATOR$ $AMOUNT$ of the
+	following statements are true'). An explicit operator can only come from 2.1+, so its
+	presence is the one in-file signal that the compact form is safe to write.
+	"""
+	if depth > 40:
+		return False
+	for node in nodes:
+		if node.get('type') != 'node':
+			continue
+		val = node.get('val')
+		if str(node.get('key', '')) == 'calc_true_if' and isinstance(val, list):
+			for child in val:
+				if (child.get('type') == 'node' and str(child.get('key', '')) == 'amount'
+						and child.get('op') in ('>=', '<=', '<', '>', '!=')):
+					return True
+		if isinstance(val, list) and _tree_has_modern_calc_true_if(val, depth + 1):
+			return True
+	return False
+
+
+def _resolve_xor_form(tree):
+	"""How to write an 'exactly one' pattern for this document: 'calc_true_if' or 'or_nand'."""
+	if XOR_FORM == 'auto':
+		# Mirrors the file's own style, like safe navigation: the compact counted form needs
+		# Stellaris 2.1+, so without evidence of that version the OR/NAND pair - which every
+		# version understands - is used instead.
+		return 'calc_true_if' if _tree_has_modern_calc_true_if(tree) else 'or_nand'
+	return XOR_FORM
+
 
 
 def _negated_scope_block(node, guard_scopes):
@@ -1624,6 +1712,115 @@ def _or_to_if_else(or_node):
 	return None
 
 
+def _negates_all(negatives, positives):
+	"""True when each 'negatives' entry is the negation of a different 'positives' one."""
+	if len(negatives) != len(positives) or not negatives:
+		return False
+	taken = [False] * len(positives)
+
+	def _assign(index):
+		if index == len(negatives):
+			return True
+		for pos_index, positive in enumerate(positives):
+			if taken[pos_index] or not _limits_are_negations([negatives[index]], [positive]):
+				continue
+			taken[pos_index] = True
+			if _assign(index + 1):
+				return True
+			taken[pos_index] = False
+		return False
+
+	return _assign(0)
+
+
+def _xor_members(xor_node):
+	"""Members of an 'exactly one of {A, B, ...}' pattern written out in full.
+
+	The two-member case is '(A AND not B) OR (not A AND B)'; the K-member case is one 'AND'
+	per member, holding that member positive and every other member negated. The enclosing
+	node is an 'OR' for the positive form and a 'NOR' (or 'NOT = { OR = ... }') for 'not
+	exactly one' - only that node's own children are inspected, so both read the same way.
+
+	Returns the members in written order, or None when the shape is anything else: a repeated
+	member, an arm that is not the negation of all the others, more than four members, or a
+	comment anywhere inside - the rewrite drops the whole sub-structure, so a comment in it
+	would go missing.
+	"""
+	if any(xor_node.get(meta) for meta in ('_cm_open', '_cm_inline', '_cm_close')):
+		return None
+	children = xor_node.get('val', [])
+	if any(c.get('type') == 'comment' for c in children):
+		return None
+	arms = []
+	for arm in children:
+		if arm.get('type') != 'node' or arm.get('key') != 'AND' or not isinstance(arm.get('val'), list):
+			return None
+		if any(arm.get(meta) for meta in ('_cm_open', '_cm_inline', '_cm_close')):
+			return None
+		if any(c.get('type') == 'comment' for c in arm['val']):
+			return None
+		arms.append([c for c in arm['val'] if c.get('type') == 'node'])
+	# one arm per member, each exactly as wide as there are members
+	if not 2 <= len(arms) <= 4 or any(len(arm) != len(arms) for arm in arms):
+		return None
+	members = []
+	for arm in arms:
+		positives = [c for c in arm if not _is_negation_node(c)]
+		if len(positives) != 1:
+			return None
+		members.append(positives[0])
+	for i in range(len(members)):
+		for j in range(i + 1, len(members)):
+			if nodes_are_equal(members[i], members[j]):
+				return None
+	for index, arm in enumerate(arms):
+		others = [m for j, m in enumerate(members) if j != index]
+		if not _negates_all([c for c in arm if c is not members[index]], others):
+			return None
+	return members
+
+
+def _xor_to_calc_true_if(xor_node, negated=False):
+	"""'OR = { AND = { not A B } AND = { A not B } }' -> 'calc_true_if = { amount = 1 A B }'.
+
+	That OR holds when exactly one member is true, and 'calc_true_if' counts the members that
+	are true, so 'amount = 1' is the same expression in one node instead of three. A 'NOR'
+	over the same arms ('not exactly one') becomes 'amount != 1', which covers a count of
+	zero or of two-and-more the same way. Trigger-side, and Stellaris 2.1+ only: before that
+	'=' on 'amount' was read as 'at least' (see '_tree_has_modern_calc_true_if').
+	"""
+	members = _xor_members(xor_node)
+	if members is None:
+		return None
+	amount = {'key': 'amount', 'op': '!=' if negated else '=', 'val': '1', 'type': 'node'}
+	children = [copy.deepcopy(m) for m in members]
+	for child in children:
+		child.pop('_fp', None)
+	return {'key': 'calc_true_if', 'op': '=', 'val': [amount] + children, 'type': 'node'}
+
+
+def _xor_to_or_nand(xor_node, negated=False):
+	"""'OR = { AND = { not A B } AND = { A not B } }' -> 'AND = { OR = { A B } NAND = { A B } }'.
+
+	'Exactly one of A and B' is also 'at least one, but not both' - the XOR idiom the wiki
+	uses - and every Stellaris version understands OR/NAND, unlike 'amount = 1' on
+	'calc_true_if'. Nothing is gained for three or more members ('at most one of three' has no
+	OR/NAND spelling) nor for the negated form, so both are left as they are.
+	"""
+	if negated:
+		return None
+	members = _xor_members(xor_node)
+	if members is None or len(members) != 2:
+		return None
+	first, second = (copy.deepcopy(m) for m in members)
+	for child in (first, second):
+		child.pop('_fp', None)
+	any_node = {'key': 'OR', 'op': '=', 'val': [first, second], 'type': 'node'}
+	both_node = {'key': 'NAND', 'op': '=', 'val': [copy.deepcopy(first), copy.deepcopy(second)], 'type': 'node'}
+	return {'key': 'AND', 'op': '=', 'val': [any_node, both_node], 'type': 'node'}
+
+
+
 
 
 
@@ -1992,11 +2189,42 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	# 'OR = { AND = { A ...B }  AND = { not A ...C } }' is 'if A then B else C', which only
 	# evaluates A once. Trigger-side; the if/else keeps its form (the implication rewrite
 	# above skips a conditional that has a following else).
+	#
+	# Before that, an OR (or NOR) whose arms are the full expansion of 'exactly one of
+	# {A, B, ...}' is not an if/else at all - it is a count - so it folds into one
+	# 'calc_true_if' (or the version-safe OR/NAND pair) and the if/else rule never sees it.
+	# 'calc_true_if' is a trigger like OR itself, so this stays trigger-side too.
 	i = 0
 	# Only runs with the conditional <-> OR conversion enabled.
 	while CONDITIONAL_CONVERSIONS and i < len(node_list):
 		or_node = node_list[i]
-		if or_node.get('type') != 'node' or or_node.get('key') != 'OR':
+		negated_xor = False
+		if (or_node.get('type') == 'node' and or_node.get('key') == 'NOT'
+				and isinstance(or_node.get('val'), list)
+				and not any(or_node.get(meta) for meta in ('_cm_open', '_cm_inline', '_cm_close'))):
+			# 'NOT = { OR = { <arms> } }' says the same as 'NOR = { <arms> }'; normally the
+			# merge above has spelled it that way already, but a surviving NOT form counts too.
+			inner = [c for c in or_node['val'] if c.get('type') == 'node']
+			if (len(inner) == 1 and inner[0].get('key') == 'OR' and isinstance(inner[0].get('val'), list)
+					and not any(c.get('type') == 'comment' for c in or_node['val'])):
+				or_node = inner[0]
+				negated_xor = True
+		if or_node.get('type') != 'node' or or_node.get('key') not in ('OR', 'NOR'):
+			i += 1
+			continue
+		if or_node.get('key') == 'NOR':
+			negated_xor = True
+		if trigger_container or scope_context in (None, 'trigger'):
+			xor_node = (_xor_to_calc_true_if(or_node, negated_xor)
+					if _ACTIVE_XOR_FORM == 'calc_true_if' else _xor_to_or_nand(or_node, negated_xor))
+			if xor_node is not None:
+				node_list[i] = xor_node
+				changed_any = True
+				print("Folded an 'exactly one' conditional into "
+						+ ('calc_true_if' if _ACTIVE_XOR_FORM == 'calc_true_if' else 'OR/NAND'), file=sys.stderr)
+				i += 1
+				continue
+		if or_node.get('key') != 'OR':
 			i += 1
 			continue
 		folded = _or_to_if_else(or_node)
@@ -4293,7 +4521,7 @@ def block_to_string(block_list):
 
 # --- 9. Main ---
 def process_text(content):
-	global _ACTIVE_SAFE_NAV
+	global _ACTIVE_SAFE_NAV, _ACTIVE_XOR_FORM
 	original_content = content
 	try:
 		content = content.replace('\r\n', '\n')
@@ -4301,6 +4529,7 @@ def process_text(content):
 		tree = parse(tokens, content)
 
 		_ACTIVE_SAFE_NAV = _resolve_safe_navigation_mode(tree)
+		_ACTIVE_XOR_FORM = _resolve_xor_form(tree)
 		keys_lowercased = lowercase_keys(tree)
 		keys_uppercased = uppercase_keys(tree)
 		yes_no_lowercased = lowercase_yes_no_values(tree)
@@ -4369,6 +4598,8 @@ if __name__ == "__main__":
 					help="Enable the (BETA) conditional rewrites: trigger 'if' implication, complementary OR branches and the if/if -> if/else_if reorder; off by default")
 	parser.add_argument("--safe-navigation", choices=('auto', 'fold', 'revert', 'ignore'), default=None,
 						help="Safe navigation handling: auto (mirror the file's style), fold, revert or ignore")
+	parser.add_argument("--xor-form", choices=('auto', 'calc_true_if', 'or_nand'), default=None,
+					help="How to write an 'exactly one of ...' conditional: auto (mirror the file's style), calc_true_if (one node, Stellaris 2.1+) or or_nand (works in any version)")
 	parser.add_argument("--use-safe-navigation", action="store_true", help="Legacy alias for --safe-navigation fold")
 	parser.add_argument("--check-indent", action="store_true",
 					help="Report lines whose indentation does not match their block depth (stderr, and in the JSON as indent_issues)")
@@ -4377,6 +4608,7 @@ if __name__ == "__main__":
 	NO_COMPACT = args.no_compact
 	SAFE_NAVIGATION_MODE = args.safe_navigation
 	CONDITIONAL_CONVERSIONS = args.conditional_conversions
+	XOR_FORM = args.xor_form or 'auto'
 	if SAFE_NAVIGATION_MODE is None and args.use_safe_navigation:
 		USE_SAFE_NAVIGATION = True
 

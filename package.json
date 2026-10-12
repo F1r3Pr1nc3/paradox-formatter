@@ -61,7 +61,22 @@
                 "paradox-formatter.conditionalConversions": {
                     "type": "boolean",
                     "default": false,
-                    "description": "BETA - rewrite conditionals: a trigger 'if = { limit = L body }' as the implication 'OR = { NOT = { L } body }' (an empty-bodied 'if'/'else' becomes one OR), complementary 'OR' branches back into 'if'/'else', and an 'if' whose limit negates one condition of the previous 'if' into an 'if'/'else_if' chain (drops a trigger leaf). Off by default."
+                    "description": "BETA - rewrite conditionals: a trigger 'if = { limit = L body }' as the implication 'OR = { NOT = { L } body }' (an empty-bodied 'if'/'else' becomes one OR), complementary 'OR' branches back into 'if'/'else', an 'if' whose limit negates one condition of the previous 'if' into an 'if'/'else_if' chain (drops a trigger leaf), and a fully written out 'exactly one of {A, B}' into 'calc_true_if' (see the xorForm setting). Off by default."
+                },
+                "paradox-formatter.xorForm": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "calc_true_if",
+                        "or_nand"
+                    ],
+                    "enumDescriptions": [
+                        "Mirror the file's own style: use the compact 'calc_true_if' only when the document already relies on the modern 'amount >= ...' spelling, otherwise the version-safe OR/NAND pair.",
+                        "Write 'calc_true_if = { amount = 1 ... }' - one node instead of three, for Stellaris 2.1 and later (before that, '=' on 'amount' was read as 'at least').",
+                        "Write 'AND = { OR = { ... } NAND = { ... } }' - understood by every Stellaris version, but only possible for two members."
+                    ],
+                    "default": "auto",
+                    "description": "BETA - how the 'exactly one of {A, B}' pattern ('OR = { AND = { not A B } AND = { A not B } }') is written. Only used when 'paradox-formatter.conditionalConversions' is on."
                 }
             }
         },
