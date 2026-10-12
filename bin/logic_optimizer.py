@@ -199,12 +199,18 @@ EFFECT_CONTEXT_SCOPES = frozenset((
 	'success', 'fail', 'abort', 'while', 'random_list', 'random', 'then',
 ))
 
-# A 'break' does not stop at every container: it unwinds straight through the transparent ones
-# ('hidden_effect', the weighted blocks), so they neither capture it nor start a fresh effect
-# execution. What is left of EFFECT_CONTEXT_SCOPES once these are removed is where a 'break' can
-# never reach past - the reset points for the reach check in the recursion below. 'while' and an
-# 'inline_script' capture the break instead, so they clear the flag outright.
-BREAK_TRANSPARENT_SCOPES = frozenset(('hidden_effect', 'random_list', 'random', 'then', 'tooltip'))
+# Containers that start a fresh effect execution: a 'break' can never reach past one of these, so
+# they reset the reach check in the recursion below. Deliberately its own set rather than
+# EFFECT_CONTEXT_SCOPES: the containers a 'break' passes straight through are simply absent from
+# it - 'hidden_effect' and the weighted blocks ('random_list', 'random', 'then') - and so are the
+# loops and scripts that capture it instead ('while'/'inline_script', see BREAK_CAPTURE_KEYS). A
+# missing key here only makes the check stricter, which is the safe direction.
+EFFECT_ROOTS = frozenset((
+	'immediate', 'option', 'after', 'effect',
+	'success', 'fail', 'abort',
+	'on_success', 'on_fail',
+	'on_start', 'on_complete', 'on_cancel', 'on_monthly',
+))
 BREAK_CAPTURE_KEYS = ('while', 'inline_script')
 
 TRIGGER_QUANTIFIER = ('any_', 'count_')
@@ -3301,8 +3307,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				# 'inline_script' captures it instead, so the flag is cleared outright there.
 				child_break_local = (
 					str(key) not in BREAK_CAPTURE_KEYS
-					and (str(key) in EFFECT_CONTEXT_SCOPES
-						and str(key) not in BREAK_TRANSPARENT_SCOPES
+					and (str(key) in EFFECT_ROOTS
 						or (break_is_local and _is_last_script(node_list, node))))
 				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context, guaranteed_scopes=guaranteed, if_implication_context=in_if_implication, break_is_local=child_break_local)
 			if child_changed:
