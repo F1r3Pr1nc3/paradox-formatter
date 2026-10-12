@@ -1241,7 +1241,12 @@ def _ends_with_break_yes(cond_node):
 
 
 def _remove_trailing_break(cond_node):
-	"""Drop the trailing 'break = yes' node from the conditional."""
+	"""Drop the trailing 'break = yes' node, keeping whatever comment it carried.
+
+	The line the 'break' sat on survives as a comment: it moves onto the script in front of
+	it ('delete_ship = this # ...'), or onto the opening brace when the 'break' was the only
+	thing in the body.
+	"""
 	children = cond_node.get('val')
 	if not isinstance(children, list):
 		return
@@ -1249,7 +1254,29 @@ def _remove_trailing_break(cond_node):
 	if not nodes:
 		return
 	last = nodes[-1]
-	cond_node['val'] = [c for c in children if c is not last]
+	carried = ''.join(last.get(meta, '') for meta in ('_cm_inline', '_cm_close'))
+	prev = None
+	for child in children:
+		if child is last:
+			break
+		if child.get('type') == 'node':
+			prev = child
+	kept = []
+	for child in children:
+		if child is last:
+			continue
+		kept.append(child)
+		if child is prev and carried:
+			if isinstance(prev.get('val'), list):
+				# a block loses a trailing comment once it is inlined, so the line the
+				# 'break' sat on becomes a comment of its own right behind it
+				kept.append({'type': 'comment', 'val': carried.strip()})
+			else:
+				prev['_cm_inline'] = prev.get('_cm_inline', '') + carried
+	if carried and prev is None:
+		# the 'break' was the only thing in the body: the comment goes on the brace
+		cond_node['_cm_open'] = cond_node.get('_cm_open', '') + carried
+	cond_node['val'] = kept
 
 
 def _mentions_event_target_exists(nodes, depth=0):
@@ -2078,11 +2105,15 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			if first is None or len(first['limit']) < 2:
 				i += 1
 				continue
-			# Only an immediately following 'if' - moving across comments would re-attach them.
-			if i + 1 >= len(node_list) or node_list[i + 1].get('type') != 'node':
+			# The next 'if', stepping over comment lines: the two branches swap in place, so
+			# those comments stay exactly where they are.
+			j = i + 1
+			while j < len(node_list) and node_list[j].get('type') == 'comment':
+				j += 1
+			if j >= len(node_list) or node_list[j].get('type') != 'node':
 				i += 1
 				continue
-			second_cond = node_list[i + 1]
+			second_cond = node_list[j]
 			if second_cond.get('op') != '=' or second_cond.get('key') != 'if':
 				i += 1
 				continue
@@ -2108,7 +2139,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				continue
 			# A following 'else_if'/'else' belongs to the second conditional and would be
 			# orphaned once that one becomes the 'if' of the chain.
-			if _has_following_else(node_list, i + 1):
+			if _has_following_else(node_list, j):
 				i += 1
 				continue
 			# The limit loses a condition, so nothing there may carry a comment.
@@ -2125,10 +2156,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			first_cond['key'] = 'else_if'
 			first_cond.pop('_fp', None)
 			second_cond.pop('_fp', None)
-			node_list[i], node_list[i + 1] = node_list[i + 1], node_list[i]
+			node_list[i], node_list[j] = node_list[j], node_list[i]
 			changed_any = True
 			print(f"Reordered if/if into if/else_if (dropped trigger leaf {negated_leaf.get('key', '')})", file=sys.stderr)
-			i += 2
+			i = j + 1
 
 
 	# --- 'break = yes' is a stop: the rest of the block becomes the 'not A' side -----------------
@@ -2155,15 +2186,23 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			if scope_context is None and _if_condition_guesses_trigger(cond):
 				i += 1
 				continue
-			# the run of 'break' conditionals directly after this one
+			# the run of 'break' conditionals after this one, stepping over comment lines:
+			# they stay exactly where they are, which is between the branches of the chain
+			# ('distant_stars_events_2.txt'). 'k' lands on the first node that is neither a
+			# comment nor a break conditional, so 'rest' still starts at a real node.
 			run = []
 			k = i + 1
-			while (k < len(node_list) and node_list[k].get('type') == 'node'
-					and node_list[k].get('op') == '='
-					and node_list[k].get('key') in ('if', 'else_if')
-					and _ends_with_break_yes(node_list[k])):
-				run.append(k)
-				k += 1
+			while k < len(node_list):
+				if node_list[k].get('type') == 'comment':
+					k += 1
+					continue
+				if (node_list[k].get('type') == 'node' and node_list[k].get('op') == '='
+						and node_list[k].get('key') in ('if', 'else_if')
+						and _ends_with_break_yes(node_list[k])):
+					run.append(k)
+					k += 1
+					continue
+				break
 			rest = node_list[k:]
 			if run and not any(c.get('type') == 'node' for c in rest):
 				# a dispatch chain: every branch stops and nothing else follows it
@@ -2227,6 +2266,39 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			changed_any = True
 			print("Moved the script after 'break = yes' into an else", file=sys.stderr)
 			i += 1
+
+	# --- HOIST A CHAIN OUT OF AN 'else' ----------------------------------------------------------
+	# 'else = { <comments> if = { … } else_if = { … } else = { … } }' is just the next links of
+	# the chain it hangs off, one indentation level deeper: that branch runs exactly when the
+	# condition above it failed, which is what 'else_if' means. Hand written files use this
+	# shape ('distant_stars_events_2_OLD.txt'); hoisting it makes them come out identical to the
+	# 'break = yes' form, which the rule above folds into the same flat chain. Only an 'else'
+	# whose whole body is comments plus one complete chain is hoisted - an 'else' with any other
+	# script in it stays as it is, since its first branch would then run unconditionally.
+	if CONDITIONAL_CONVERSIONS and scope_context in (None, 'effect'):
+		for idx in range(len(node_list) - 1, -1, -1):
+			else_node = node_list[idx]
+			if (else_node.get('type') != 'node' or else_node.get('op') != '='
+					or str(else_node.get('key', '')) != 'else'
+					or not isinstance(else_node.get('val'), list)):
+				continue
+			body = else_node['val']
+			links = [c for c in body if c.get('type') == 'node']
+			if not links or links[0].get('key') != 'if' or links[0].get('op') != '=':
+				continue
+			if not all(c.get('key') in ('else_if', 'else') and c.get('op') == '=' for c in links[1:]):
+				continue
+			if sum(1 for c in links if c.get('key') == 'else') > 1:
+				continue
+			# the chain takes over the 'else' it was hiding in: its 'if' becomes the 'else_if'
+			links[0]['key'] = 'else_if'
+			links[0].pop('_fp', None)
+			for meta in ('_cm_open', '_cm_inline', '_cm_close'):
+				if meta in else_node:
+					links[0][meta] = else_node[meta] + links[0].get(meta, '')
+			node_list[idx:idx + 1] = body
+			changed_any = True
+			print("Hoisted an if/else_if chain out of an else", file=sys.stderr)
 
 	# --- REPAIR 'NOR = { exists = X  X = { C.. } }' ---
 	# That leftover is always false while X exists, so the script it came from can only have

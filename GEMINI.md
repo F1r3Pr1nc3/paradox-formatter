@@ -28,6 +28,7 @@ This project is a VS Code extension (`f1r3pr1nc3.paradox-formatter`) that provid
 - The `logic_optimizer.py` horizontal merging step was updated to prevent merging structural block keywords (like `limit`, `trigger`) into `NOR` logic gates during numerical/boolean negation routines.
 - The `logic_optimizer.py` was updated to replace regex-based logic with a proper parser to handle `factor=0` modifiers and nested blocks without corrupting the file structure (preventing unbalanced braces).
 - Indentation preference for the workspace is set to 4-space tabs.
+- The beta conditional conversions (`CONDITIONAL_CONVERSIONS`, `--conditional-conversions`) fold a `break = yes` dispatch chain and an `else` that only wraps one `if`/`else_if`/`else` chain into a single flat chain, and turn an `if`/`if` pair whose limits negate each other into `if`/`else_if`. All of them step over interleaved comment lines and keep every comment in place - a comment on the `break` line itself moves onto the script in front of it (or becomes a comment line behind it when that script is a block that would be inlined). The `break` rules are skipped inside `while`/`inline_script`, where the stop is not local to the block.
 
 ## To-Do
 - `switch`/`inverted_switch` parse as raw blocks, so `_body_node_hint` skips them and they never count as "effect evidence" when guessing trigger-vs-effect for a conditional in an unknown container. Decide whether a raw `switch` should stop the trigger guess and implement it (see the `# TODO` in `_body_node_hint`).
