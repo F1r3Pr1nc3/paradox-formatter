@@ -2602,10 +2602,36 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					and str(node_list[k].get('key', '')) == 'else'):
 				# The 'else' sits directly behind the conditional (nothing of its own kind in
 				# between - the run above is empty here), so the pair already runs one of the two
-				# branches: the 'break' adds nothing and everything after the else belongs inside.
+				# branches and the 'break' adds nothing.
+				else_node = node_list[k]
+				limit_node = None
+				for child in cond.get('val', []):
+					if child.get('type') == 'node' and child.get('key') == 'limit':
+						limit_node = child
+						break
+				guard_body = [c for c in cond.get('val', [])
+						if c.get('type') == 'node' and c is not limit_node and c.get('key') != 'break']
+				if limit_node is not None and not guard_body and isinstance(else_node.get('val'), list):
+					# Nothing but the 'break' in the body: that is the guard reading, so invert its
+					# limit and take the else's script rather than leave an empty 'if' behind - the
+					# same shape the guard without an else gets ('horizonsignal_events.txt'
+					# akx.9470). Script behind the else is skipped by that 'break' just as the
+					# else's own body is, so it comes along into the inverted if.
+					if any(c.get('type') == 'node' for c in node_list[k + 1:]):
+						print("WARNING: script after the else of a 'break' guard - moving it into the inverted if", file=sys.stderr)
+					moved = list(else_node['val']) + list(node_list[k + 1:])
+					_attach_comments(cond, else_node)
+					limit_node['val'] = [{'key': 'NOT', 'op': '=', 'val': list(limit_node.get('val', [])), 'type': 'node'}]
+					_remove_trailing_break(cond)
+					cond['val'] = list(cond.get('val', [])) + moved
+					cond.pop('_fp', None)
+					del node_list[k:]
+					changed_any = True
+					print("Inverted the limit of an empty-bodied 'break' guard onto its else", file=sys.stderr)
+					i += 1
+					continue
 				if any(c.get('type') == 'node' for c in node_list[k + 1:]):
 					print("WARNING: an else after 'break = yes' with script following - moving that script into the else", file=sys.stderr)
-					else_node = node_list[k]
 					else_node['val'] = list(else_node.get('val', [])) + list(node_list[k + 1:])
 					else_node.pop('_fp', None)
 					del node_list[k + 1:]
