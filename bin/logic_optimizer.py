@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.6.5"
+__version__ = "0.6.4"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -2571,21 +2571,38 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					print("Removed a trailing 'break = yes' from an else", file=sys.stderr)
 				i += 1
 				continue
-			if run and not any(c.get('type') == 'node' for c in rest):
-				# a dispatch chain: every branch stops and nothing else follows it
+			if run:
+				# The branches of a 'break' dispatch: each one stops the block, so only the first
+				# matching branch can have any effect and the branches are the links of one chain.
+				# Whatever follows the run is what happens when none of them matched - the chain's
+				# 'else' - so it moves in there ('leviathans_events_2.txt' style dispatch chains
+				# with script behind them, 'precursor_events.txt' artifact sellers). An 'else' the
+				# chain already ends in is used, and script behind that goes inside it too.
 				_remove_trailing_break(cond)
 				cond.pop('_fp', None)
 				for m in run:
 					_remove_trailing_break(node_list[m])
 					node_list[m]['key'] = 'else_if'
 					node_list[m].pop('_fp', None)
+				tail = node_list[k:]
+				if any(c.get('type') == 'node' for c in tail):
+					if str(tail[0].get('key', '')) == 'else' and isinstance(tail[0].get('val'), list):
+						if any(c.get('type') == 'node' for c in tail[1:]):
+							print("WARNING: script after the else of a 'break' chain - moving it into the else", file=sys.stderr)
+						tail[0]['val'] = list(tail[0]['val']) + list(tail[1:])
+						tail[0].pop('_fp', None)
+						del node_list[k + 1:]
+					else:
+						node_list[k:] = [{'key': 'else', 'op': '=', 'val': list(tail), 'type': 'node'}]
 				changed_any = True
 				print("Turned a 'break' dispatch chain into if/else_if", file=sys.stderr)
 				i = k
 				continue
 			if (k < len(node_list) and node_list[k].get('type') == 'node'
 					and str(node_list[k].get('key', '')) == 'else'):
-				# the conditional already carries an else, and everything after it belongs there
+				# The 'else' sits directly behind the conditional (nothing of its own kind in
+				# between - the run above is empty here), so the pair already runs one of the two
+				# branches: the 'break' adds nothing and everything after the else belongs inside.
 				if any(c.get('type') == 'node' for c in node_list[k + 1:]):
 					print("WARNING: an else after 'break = yes' with script following - moving that script into the else", file=sys.stderr)
 					else_node = node_list[k]
