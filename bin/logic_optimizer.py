@@ -1314,18 +1314,36 @@ def _has_following_else(node_list, idx):
 	return False
 
 
+def _holds_script(nodes):
+	"""True when the list holds anything but comments - a node or a raw block ('switch')."""
+	return any(c.get('type') != 'comment' for c in nodes)
+
+
+def _has_raw_block(nodes):
+	"""True when the list holds a raw block ('switch', 'inverted_switch'), comments or not.
+
+	Raw blocks are not 'node's, so a check that only looks at nodes walks straight past them -
+	and a rewrite that drops or re-homes the nodes around one changes when it runs.
+	"""
+	return any(c.get('type') not in ('node', 'comment') for c in nodes)
+
+
 def _ends_with_break_yes(cond_node):
-	"""True when the last node child of the conditional is 'break = yes'."""
+	"""True when the conditional's last non-comment child is 'break = yes'.
+
+	Comments are skipped, but a raw block ('switch') is content: a 'break' written in front of
+	one stops the block before it, so it must not be read as a trailing break.
+	"""
 	children = cond_node.get('val')
 	if not isinstance(children, list):
 		return False
-	nodes = [c for c in children if c.get('type') == 'node']
-	if not nodes:
+	content = [c for c in children if c.get('type') != 'comment']
+	if not content:
 		return False
-	last = nodes[-1]
+	last = content[-1]
 	val = last.get('val')
-	return (str(last.get('key', '')) == 'break' and last.get('op') == '='
-		and not isinstance(val, list) and str(val).lower() == 'yes')
+	return (last.get('type') == 'node' and str(last.get('key', '')) == 'break'
+		and last.get('op') == '=' and not isinstance(val, list) and str(val).lower() == 'yes')
 
 
 def _remove_trailing_break(cond_node):
@@ -1751,6 +1769,9 @@ def _xor_members(xor_node):
 	children = xor_node.get('val', [])
 	if any(c.get('type') == 'comment' for c in children):
 		return None
+	if _has_raw_block(children):
+		# 'switch' and friends parse as raw blocks: a fold would drop them silently.
+		return None
 	arms = []
 	for arm in children:
 		if arm.get('type') != 'node' or arm.get('key') != 'AND' or not isinstance(arm.get('val'), list):
@@ -1758,6 +1779,8 @@ def _xor_members(xor_node):
 		if any(arm.get(meta) for meta in ('_cm_open', '_cm_inline', '_cm_close')):
 			return None
 		if any(c.get('type') == 'comment' for c in arm['val']):
+			return None
+		if _has_raw_block(arm['val']):
 			return None
 		arms.append([c for c in arm['val'] if c.get('type') == 'node'])
 	# one arm per member, each exactly as wide as there are members
@@ -2563,8 +2586,8 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				# line 4232). Script after the chain is skipped when the else runs, so a 'break'
 				# in front of it is doing real work and stays - the other readings above are for
 				# a conditional that still has an 'A' to negate, which an 'else' has not.
-				if (len([c for c in cond.get('val', []) if c.get('type') == 'node']) > 1
-						and not any(c.get('type') == 'node' for c in rest)):
+				if (len([c for c in cond.get('val', []) if c.get('type') != 'comment']) > 1
+						and not _holds_script(rest)):
 					_remove_trailing_break(cond)
 					cond.pop('_fp', None)
 					changed_any = True
@@ -2585,7 +2608,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					node_list[m]['key'] = 'else_if'
 					node_list[m].pop('_fp', None)
 				tail = node_list[k:]
-				if any(c.get('type') == 'node' for c in tail):
+				if _holds_script(tail):
 					if str(tail[0].get('key', '')) == 'else' and isinstance(tail[0].get('val'), list):
 						if any(c.get('type') == 'node' for c in tail[1:]):
 							print("WARNING: script after the else of a 'break' chain - moving it into the else", file=sys.stderr)
@@ -2617,7 +2640,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					# same shape the guard without an else gets ('horizonsignal_events.txt'
 					# akx.9470). Script behind the else is skipped by that 'break' just as the
 					# else's own body is, so it comes along into the inverted if.
-					if any(c.get('type') == 'node' for c in node_list[k + 1:]):
+					if _holds_script(node_list[k + 1:]):
 						print("WARNING: script after the else of a 'break' guard - moving it into the inverted if", file=sys.stderr)
 					moved = list(else_node['val']) + list(node_list[k + 1:])
 					_attach_comments(cond, else_node)
@@ -2630,7 +2653,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					print("Inverted the limit of an empty-bodied 'break' guard onto its else", file=sys.stderr)
 					i += 1
 					continue
-				if any(c.get('type') == 'node' for c in node_list[k + 1:]):
+				if _holds_script(node_list[k + 1:]):
 					print("WARNING: an else after 'break = yes' with script following - moving that script into the else", file=sys.stderr)
 					else_node['val'] = list(else_node.get('val', [])) + list(node_list[k + 1:])
 					else_node.pop('_fp', None)
@@ -2641,7 +2664,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				print("Removed a redundant 'break = yes' in front of an else", file=sys.stderr)
 				i += 1
 				continue
-			if not any(c.get('type') == 'node' for c in rest):
+			if not _holds_script(rest):
 				_remove_trailing_break(cond)
 				cond.pop('_fp', None)
 				changed_any = True
@@ -2693,6 +2716,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					or not isinstance(else_node.get('val'), list)):
 				continue
 			body = else_node['val']
+			if _has_raw_block(body):
+				# A raw block ('switch') not parsed as a node would fall out of the 'else' and
+				# run in every case once the chain is hoisted - 'crisis_events_2.txt' line 2649.
+				continue
 			links = [c for c in body if c.get('type') == 'node']
 			if not links or links[0].get('key') != 'if' or links[0].get('op') != '=':
 				continue
