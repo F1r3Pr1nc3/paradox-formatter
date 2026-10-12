@@ -195,16 +195,17 @@ IF_IMPLICATION_EXCEPTION_KEYS = ('custom_tooltip', 'text')
 # into 'scope? = { body }' ("if the scope exists, run body"). In trigger containers the
 # same conditional means 'L implies body' and has to become an OR instead.
 EFFECT_CONTEXT_SCOPES = frozenset((
-	'immediate', 'option', 'after', 'effect', 'tooltip',
-	'success', 'fail', 'abort', 'while', 'random_list', 'random', 'then', # 'on_success', 'on_fail', 'hidden_effect',
+	'immediate', 'option', 'after', 'effect', 'tooltip', 'on_success', 'on_fail', 'hidden_effect',
+	'success', 'fail', 'abort', 'while', 'random_list', 'random', 'then',
 ))
 
-# Containers that start a fresh effect execution: a 'break' can never reach past one of these.
-# Between two of them a 'break' unwinds through the scope blocks around it, so a rewrite that
-# treats the following script as "the else side" is only sound while every container on the way
-# up to one of these ends with the conditional's node ('marauder_events.txt' line 9675, where the
-# 'break' inside 'overlord = { ... }' also skips the country_event behind the enclosing 'if').
-EFFECT_ROOTS = frozenset(('immediate', 'option', 'after', 'effect', 'success', 'fail', 'abort'))
+# A 'break' does not stop at every container: it unwinds straight through the transparent ones
+# ('hidden_effect', the weighted blocks), so they neither capture it nor start a fresh effect
+# execution. What is left of EFFECT_CONTEXT_SCOPES once these are removed is where a 'break' can
+# never reach past - the reset points for the reach check in the recursion below. 'while' and an
+# 'inline_script' capture the break instead, so they clear the flag outright.
+BREAK_TRANSPARENT_SCOPES = frozenset(('hidden_effect', 'random_list', 'random', 'then', 'tooltip'))
+BREAK_CAPTURE_KEYS = ('while', 'inline_script')
 
 TRIGGER_QUANTIFIER = ('any_', 'count_')
 EFFECT_QUANTIFIER = ('every_', 'ordered_', 'random_')
@@ -2680,6 +2681,37 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				print("Removed a redundant 'break = yes' in front of an else", file=sys.stderr)
 				i += 1
 				continue
+			if (k < len(node_list) and node_list[k].get('type') == 'node'
+					and str(node_list[k].get('key', '')) == 'else_if'):
+				# What follows continues *this* chain, so it must never be wrapped up as if it
+				# were unrelated script: its leading 'else_if' would lose the 'if' it belongs to.
+				# Nothing after the chain means the 'break' is simply redundant, since a chain
+				# already excludes the branches below the one that ran ('crisis_events_2.txt'
+				# line 2092). Script after the chain only runs when this branch did not, so the
+				# chain moves under an 'else' with its leading 'else_if' rebased to an 'if' -
+				# keeping the chain valid and its guards intact.
+				chain_end = k
+				while (chain_end < len(node_list) and node_list[chain_end].get('type') == 'node'
+						and str(node_list[chain_end].get('key', '')) in ('else_if', 'else')):
+					chain_end += 1
+				if not _holds_script(node_list[chain_end:]):
+					_remove_trailing_break(cond)
+					cond.pop('_fp', None)
+					changed_any = True
+					print("Removed a redundant 'break = yes' in front of a chain", file=sys.stderr)
+					i += 1
+					continue
+				moved = list(node_list[k:chain_end]) + list(node_list[chain_end:])
+				_remove_trailing_break(cond)
+				cond.pop('_fp', None)
+				if str(moved[0].get('key', '')) == 'else_if':
+					moved[0]['key'] = 'if'
+					moved[0].pop('_fp', None)
+				node_list[k:] = [{'key': 'else', 'op': '=', 'val': moved, 'type': 'node'}]
+				changed_any = True
+				print("Moved the chain after 'break = yes' into an else with its else_if rebased", file=sys.stderr)
+				i += 1
+				continue
 			if not _holds_script(rest):
 				_remove_trailing_break(cond)
 				cond.pop('_fp', None)
@@ -3262,14 +3294,16 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			else:
 				child_context = _scope_context_for_key(key, scope_context)
 				# A 'break' stops the block its conditional sits in and unwinds through the scope
-				# blocks around it, so the rewrites may only treat the following script as the else
-				# side while every container on the way up to a fresh effect execution ends with
-				# this node - otherwise the 'break' reaches further than the list being rewritten
-				# ('marauder_events.txt' line 9675).
+				# blocks and transparent containers around it, so the rewrites may only treat the
+				# following script as the else side while every container on the way up to a fresh
+				# effect execution ends with this node - otherwise the 'break' reaches further than
+				# the list being rewritten ('marauder_events.txt' line 9675). A 'while' or an
+				# 'inline_script' captures it instead, so the flag is cleared outright there.
 				child_break_local = (
-					str(key) in EFFECT_ROOTS
-					or (break_is_local and str(key) not in ('while', 'inline_script')
-						and _is_last_script(node_list, node)))
+					str(key) not in BREAK_CAPTURE_KEYS
+					and (str(key) in EFFECT_CONTEXT_SCOPES
+						and str(key) not in BREAK_TRANSPARENT_SCOPES
+						or (break_is_local and _is_last_script(node_list, node))))
 				optimized_children, child_changed = optimize_node_list(node['val'], parent_key=key, level=level+1, scope_context=child_context, guaranteed_scopes=guaranteed, if_implication_context=in_if_implication, break_is_local=child_break_local)
 			if child_changed:
 				node['val'] = optimized_children; changed_any = True
