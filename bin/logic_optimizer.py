@@ -4892,7 +4892,9 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--no-compact", action="store_true", help="Disable compacting of nodes")
 	parser.add_argument("--conditional-conversions", action="store_true",
-					help="Enable the (BETA) conditional rewrites: trigger 'if' implication, complementary OR branches and the if/if -> if/else_if reorder; off by default")
+					help="(BETA) conditional rewrites: trigger 'if' implication, complementary OR branches, the if/if -> if/else_if reorder, the 'break = yes' rewrites and the 'exactly one' fold")
+	parser.add_argument("--no-conditional-conversions", action="store_true",
+					help="Turn those (BETA) conditional rewrites off - this script keeps them on by default, the VS Code extension passes this flag when its setting is off")
 	parser.add_argument("--safe-navigation", choices=('auto', 'fold', 'revert', 'ignore'), default=None,
 						help="Safe navigation handling: auto (mirror the file's style), fold, revert or ignore")
 	parser.add_argument("--xor-form", choices=('auto', 'calc_true_if', 'or_nand'), default=None,
@@ -4904,7 +4906,10 @@ if __name__ == "__main__":
 
 	NO_COMPACT = args.no_compact
 	SAFE_NAVIGATION_MODE = args.safe_navigation
-	CONDITIONAL_CONVERSIONS = args.conditional_conversions
+	# The conditional rewrites are ON by default here: the script is also imported as a library by
+	# other tools (mod-updater4.4.py and the like), and the VS Code extension - the one place they
+	# default to off - says so explicitly with '--no-conditional-conversions'.
+	CONDITIONAL_CONVERSIONS = not args.no_conditional_conversions
 	XOR_FORM = args.xor_form or 'calc_true_if'
 	if SAFE_NAVIGATION_MODE is None and args.use_safe_navigation:
 		USE_SAFE_NAVIGATION = True

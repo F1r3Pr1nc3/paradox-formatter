@@ -44,6 +44,10 @@ function formatWithPythonBridge(text, forceCompact) {
 
 		if (config.get('conditionalConversions') === true) {
 			args.push('--conditional-conversions');
+		} else {
+			// The script itself keeps the (BETA) conversions on by default, so the extension has
+			// to say so explicitly when its setting is off.
+			args.push('--no-conditional-conversions');
 		}
 
 		// How a fully written out 'exactly one of {A, B}' is written. 'calc_true_if' is the
