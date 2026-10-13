@@ -1476,13 +1476,17 @@ def _contains_exception_key(nodes, depth=0):
 	return False
 
 
-def _if_implication_node(if_node):
+def _if_implication_node(if_node, guaranteed_scopes=None):
 	"""Rewrite a trigger conditional 'if = { limit = L body }' as 'OR = { NOT = { L } body }'.
 
 	In a trigger list such a conditional means 'L implies body', which is exactly
-	'not L OR body'. Returns None when it cannot be expressed as an OR (comments inside,
-	empty limit or body) so that nothing is dropped or reordered - and when the conditional
-	contains a tooltip ('custom_tooltip'/'text'), whose display would move into a branch.
+	'not L OR body'. A limit that is already a negation is negated through its positive form
+	instead of being wrapped again, so 'if = { limit = { NOR = { ... } } ... }' becomes
+	'OR = { <the OR that NOR denies> ... }' and never stacks two negations
+	('00_agreement_term_values.txt' line 879). Returns None when it cannot be expressed as an OR
+	(comments inside, empty limit or body) so that nothing is dropped or reordered - and when
+	the conditional contains a tooltip ('custom_tooltip'/'text'), whose display would move into
+	a branch.
 	"""
 	children = if_node.get('val')
 	if not isinstance(children, list):
@@ -1507,10 +1511,22 @@ def _if_implication_node(if_node):
 		limit_nodes.append(child)
 	if not limit_nodes:
 		return None
-	if len(limit_nodes) == 1:
-		neg_limit = {'key': 'NOT', 'op': '=', 'val': [limit_nodes[0]], 'type': 'node'}
-	else:
-		neg_limit = {'key': 'NAND', 'op': '=', 'val': limit_nodes, 'type': 'node'}
+	neg_limit = None
+	if len(limit_nodes) == 1 and _is_negation_node(limit_nodes[0]):
+		# The limit is already a negation ('NOT = { A }', 'NOR = { ... }', a negation pushed into
+		# a scope, ...). Negating it again would stack two - 'not(not A)' is just 'A' - so its
+		# positive form is used when that is one clean node. The result keeps the OR shape the
+		# implication reads best in ('00_agreement_term_values.txt' line 879: a NOR limit and a
+		# NOT body, which would otherwise come out as a NAND inside a NAND).
+		positive = [c for c in _get_positive_form(limit_nodes[0], guaranteed_scopes)
+				if c.get('type') == 'node']
+		if len(positive) == 1:
+			neg_limit = positive[0]
+	if neg_limit is None:
+		if len(limit_nodes) == 1:
+			neg_limit = {'key': 'NOT', 'op': '=', 'val': [limit_nodes[0]], 'type': 'node'}
+		else:
+			neg_limit = {'key': 'NAND', 'op': '=', 'val': limit_nodes, 'type': 'node'}
 	# Comments that lived on or in the limit move onto the negation it becomes - dropping
 	# the limit node would drop them (inline comment after 'limit = {', leading ones, ...).
 	for meta in ('_cm_inline', '_cm_open', '_cm_close', '_cm_preceding'):
@@ -2301,7 +2317,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			# The common case: a trigger 'if' with a body becomes 'OR = { NOT = { L } body }'.
 			has_else = _has_following_else(node_list, idx)
 			if (trigger_container or _if_condition_guesses_trigger(node)) and not has_else:
-				or_node = _if_implication_node(node)
+				or_node = _if_implication_node(node, guaranteed)
 				if or_node is not None:
 					node_list[idx] = or_node
 					changed_any = True
@@ -4375,7 +4391,15 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						print("Merged into NAND from OR-NO/NOT/NAND structure", file=sys.stderr)
 
 				if len(children) > 1:
-					if all(child.get('key') == 'AND' and isinstance(child.get('val'), list) for child in children):
+					# Hoisting the shared conditions out of the ORs is 'A AND (B or C)' only when
+					# the list they are hoisted into is conjunctive. Inside an OR/NOR/NOT (or a
+					# counted list) the siblings are ORed instead, so 'o AND t AND (r1 or r2)'
+					# would silently become 'o OR t OR (r1 or r2)' - the same guard the scope
+					# guards use further down.
+					if (parent_key not in GUARD_INHERIT_BLOCKED
+							and not parent_key.startswith(TRIGGER_QUANTIFIER)
+							and not parent_key.startswith(EFFECT_QUANTIFIER)
+							and all(child.get('key') == 'AND' and isinstance(child.get('val'), list) for child in children)):
 						common_nodes, modified_children = _extract_common_and_children(children)
 
 						if common_nodes:
