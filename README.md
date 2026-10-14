@@ -176,7 +176,7 @@ As with the rest of the aggressive scope handling, these rewrites assume every s
   * Regression test: `node test/extension_conditional_conversions.test.js` (asserts the setting reaches the Python tool as `--conditional-conversions`).
 
 ### 6. Format All Files
-You can trigger a bulk formatting operation across all open files or the entire workspace using the `PDX Formatter: Format all files` command.
+You can trigger a bulk formatting operation across the workspace using the `PDX Formatter: Format all files` command - it walks `**/*.txt` (skipping `node_modules`, `.git`, `out` and `bin`) and reports its progress per file.
 
 ### 7. Safe Navigation Support (Stellaris v4.4+)
 Enable or disable the four handling modes for the Stellaris **v4.4+ safe navigation** syntax (`xyz? = { ... }`) with the `paradox-formatter.safeNavigation` setting:
@@ -246,9 +246,10 @@ code --install-extension paradox-script-formatter-0.6.4.vsix
 
 Automatically activates for:
 
-  * `.txt` (Paradox Script)
-  * `.gui` (Interface Files)
-  * Language IDs: `paradox`, `stellaris`
+  * `.txt` (Paradox Script) and `.mod` (mod descriptor files)
+  * Language IDs: `paradox`, `stellaris`, `hoi4`, `ck2`, `eu4`, `imperator`, `vic2`, `ck3`, `vic3`, `eu5`
+
+Syntax highlighting ships for `paradox`, `stellaris`, `hoi4`, `ck2` and `eu4`; the other IDs activate the formatter only, since their highlighting comes from whichever extension defines them. `.gui` interface files are formatted as well once another extension maps them onto one of those language IDs - this extension itself claims `.txt` and `.mod`.
 
 -----
 

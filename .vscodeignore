@@ -27,7 +27,6 @@ test/**
 
 # Packaging artefacts
 *.vsix
-.vsixmanifest
 
 # AI / internal notes not meant for end users
 GEMINI.md
