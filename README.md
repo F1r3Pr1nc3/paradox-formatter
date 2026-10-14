@@ -1,6 +1,6 @@
 # Paradox Script Formatter for VS Code
 
-![Version](https://img.shields.io/badge/version-0.6.3-blue.svg)
+![Version](https://img.shields.io/badge/version-0.6.4-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 A robust, whitespace-aware formatter for Paradox Interactive game scripts (Stellaris, HOI4, EU4, CK3).
@@ -49,7 +49,7 @@ Allows formatting of just a specific block of code without touching the rest of 
 ### 4. Advanced Logic Optimization (NAND)
 The extension can now recognize and simplify complex logical expressions, such as nested `NAND` blocks, into a more readable and efficient format. This is particularly useful for complex AI logic or event scripting.
 
-> **Optional - off by default.** The conditional rewrites in this section - a trigger `if` into the `OR` implication, and complementary `OR` branches back into `if`/`else` - only run when the `paradox-formatter.ifElseOrConversion` setting is enabled (see [section 5](#5-conditional--or-conversion-optional-off-by-default)). The NAND/NOR merging and the scope handling described below are always on.
+> **Optional - off by default.** The conditional rewrites in this section - a trigger `if` into the `OR` implication, and complementary `OR` branches back into `if`/`else` - only run when the `paradox-formatter.conditionalConversions` setting is enabled, and the `exactly one of {A, B}` fold when `paradox-formatter.calcTrueIfConversions` is on (see [section 5](#5-conditional-conversions-optional-beta-off-by-default)). The NAND/NOR merging and the scope handling described below are always on.
 
 Inside `allow`, `potential`, `destroy_trigger` and `trigger` blocks a trigger-side conditional is rewritten as the equivalent implication: `if = { limit = L body }` means "if `L` then `body`", which is exactly `OR = { NOT = { L } body }`. A limit that is *already* a negation is negated through its positive form instead of being wrapped again - `limit = { NOR = { ... } }` becomes the `OR` that the `NOR` denies, so the rewrite never produces `NOT = { NOT = ... }`, `NOT = { NOR = ... }` or a `NAND` stacked on a `NAND` (`00_agreement_term_values.txt` line 879, where the limit is a `NOR` of two `AND`s and the body a `NOT`, and the result is a plain `OR` of the two `AND`s plus that `NOT`). The shared conditions of those `OR` branches stay inside their `AND`s: hoisting them out is only sound when the list they would land in is conjunctive, so that factoring now skips `OR`/`NOR`/`NOT`/counted lists. In a container the formatter does not know (`my_scripted_trigger = { ... }` and the like) a conditional is rewritten only when it can only be trigger script - its body consisting of trigger leaves (`is_owned_by = ...`, `is_same_value = ...`, comparisons, `any_*`/`count_*`, logic) - because an effect body can never look like that; scope blocks in the body are recursed into, so a body like `federation = { has_federation_perk = ... }` counts as trigger too, while an effect verb (`set_`/`add_`/`kill_`/..., `every_*`/`random_*`/`ordered_*`, a `*_event`, or `immediate`/`hidden_effect`/`random_list`/`switch`) proves effect script and stops the scan, so the conditional is left as written. An `if` with an empty body and a following `else` is `L OR B` in trigger scope (an empty body is true), so the pair collapses into one OR. Conditional chains (`else_if`) keep their form, effect-side conditionals are never touched, and the whole rewrite is independent of the safe navigation setting. A conditional that holds a tooltip (`custom_tooltip` or its `text` key, anywhere in the limit or body) is always left as written, because tooltips exist in trigger and effect script alike and moving one into an OR branch - or into the negated limit - would change when it is shown.
 
@@ -229,17 +229,17 @@ Anything still listed *after* formatting is a construct the renderer does not mo
 
 You can install the packaged extension directly using the `.vsix` file.
 
-1.  **Download** the `paradox-script-formatter-0.6.3.vsix` file.
+1.  **Download** the `paradox-script-formatter-0.6.4.vsix` file.
 2.  Open **VS Code**.
 3.  Go to the **Extensions View** (`Ctrl+Shift+X`).
 4.  Click the **three dots icon (...)** at the top-right of the Extensions menu.
 5.  Select **"Install from VSIX..."**.
-6.  Locate and select the `paradox-script-formatter-0.6.3.vsix` file.
+6.  Locate and select the `paradox-script-formatter-0.6.4.vsix` file.
 
 Alternatively, you can install it via the command line:
 
 ```bash
-code --install-extension paradox-script-formatter-0.6.3.vsix
+code --install-extension paradox-script-formatter-0.6.4.vsix
 ```
 
 ### Supported File Types

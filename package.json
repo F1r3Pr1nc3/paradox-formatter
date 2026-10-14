@@ -23,6 +23,16 @@
     "categories": [
         "Formatters"
     ],
+    "keywords": [
+        "paradox",
+        "stellaris",
+        "hoi4",
+        "eu4",
+        "ck3",
+        "victoria",
+        "formatter",
+        "modding"
+    ],
     "capabilities": {
         "documentFormattingProvider": "true",
         "documentRangeFormattingProvider": "true"
