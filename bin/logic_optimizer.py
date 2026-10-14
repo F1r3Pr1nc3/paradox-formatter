@@ -34,7 +34,7 @@ _ACTIVE_SAFE_NAV = 'fold' # resolved per document in process_text()
 # Conditional rewrites, BETA. On by default here, because the script is also imported as a
 # standalone utility by other tools (mod-updater4.4.py); the VS Code extension turns them off
 # by default through its 'paradox-formatter.conditionalConversions' setting (or
-# --conditional-conversions on the command line):
+# --no-conditional-conversions on the command line):
 #   * a trigger 'if = { limit = L body }' becomes the implication 'OR = { NOT = { L } body }'
 #     (an empty-bodied 'if' plus a following 'else' becomes one OR),
 #   * complementary OR branches 'OR = { AND = { A B } AND = { NOT = { A } C } }' fold back
@@ -45,8 +45,14 @@ _ACTIVE_SAFE_NAV = 'fold' # resolved per document in process_text()
 # With them off, conditionals are left in the form they were written in.
 CONDITIONAL_CONVERSIONS = True
 
-# How the 'exactly one of {A, B}' pattern - 'OR = { AND = { not A B } AND = { A not B } }' -
-# is written once the conversions have recognised it:
+# The 'exactly one of {A, B, ...}' fold has its own switch, because it is the one rewrite that
+# *creates* a counted trigger rather than re-spelling conditionals that are already there. Also on
+# by default here; the VS Code extension keeps it off behind its
+# 'paradox-formatter.calcTrueIfConversions' setting (or --no-calc-true-if-conversions on the
+# command line), so the two groups can be enabled independently.
+CALC_TRUE_IF_CONVERSIONS = True
+
+# How that pattern - 'OR = { AND = { not A B } AND = { A not B } }' - is written:
 #   'calc_true_if' - 'calc_true_if = { amount = 1 A B }': one node instead of three (default).
 #                    Stellaris 2.1+ only, because '=' on 'amount' read as 'at least' before that
 #                    (the built-in tooltip said so, and vanilla had no other spelling) - so files
@@ -2348,8 +2354,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	# 'calc_true_if' (or the version-safe OR/NAND pair) and the if/else rule never sees it.
 	# 'calc_true_if' is a trigger like OR itself, so this stays trigger-side too.
 	i = 0
-	# Only runs with the conditional <-> OR conversion enabled.
-	while CONDITIONAL_CONVERSIONS and i < len(node_list):
+	# Runs while either switch is on - the 'exactly one' fold has its own one
+	# (--no-calc-true-if-conversions), the if/else fold the conditional one.
+	while (CONDITIONAL_CONVERSIONS or CALC_TRUE_IF_CONVERSIONS) and i < len(node_list):
 		or_node = node_list[i]
 		negated_xor = False
 		if (or_node.get('type') == 'node' and or_node.get('key') == 'NOT'
@@ -2367,7 +2374,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			continue
 		if or_node.get('key') == 'NOR':
 			negated_xor = True
-		if trigger_container or scope_context in (None, 'trigger'):
+		if CALC_TRUE_IF_CONVERSIONS and (trigger_container or scope_context in (None, 'trigger')):
 			xor_node = (_xor_to_calc_true_if(or_node, negated_xor)
 					if _ACTIVE_XOR_FORM == 'calc_true_if' else _xor_to_or_nand(or_node, negated_xor))
 			if xor_node is not None:
@@ -2377,6 +2384,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						+ ('calc_true_if' if _ACTIVE_XOR_FORM == 'calc_true_if' else 'OR/NAND'), file=sys.stderr)
 				i += 1
 				continue
+		if not CONDITIONAL_CONVERSIONS:
+			i += 1
+			continue
 		if or_node.get('key') != 'OR':
 			i += 1
 			continue
@@ -2395,7 +2405,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	# script 'if = { limit = { A } B } else = { C }' means '(A then B) and (not A then C)', which
 	# counts once C negates B (see '_trigger_if_else_xor'). Only a trigger position folds: in an
 	# effect the pair just runs one of two bodies and has no count reading.
-	if CONDITIONAL_CONVERSIONS and (trigger_container or scope_context in (None, 'trigger')):
+	if CALC_TRUE_IF_CONVERSIONS and (trigger_container or scope_context in (None, 'trigger')):
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
@@ -4892,9 +4902,13 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--no-compact", action="store_true", help="Disable compacting of nodes")
 	parser.add_argument("--conditional-conversions", action="store_true",
-					help="(BETA) conditional rewrites: trigger 'if' implication, complementary OR branches, the if/if -> if/else_if reorder, the 'break = yes' rewrites and the 'exactly one' fold")
+					help="(BETA, on by default) conditional rewrites: trigger 'if' implication, complementary OR branches, the if/if -> if/else_if reorder and the 'break = yes' rewrites")
 	parser.add_argument("--no-conditional-conversions", action="store_true",
 					help="Turn those (BETA) conditional rewrites off - this script keeps them on by default, the VS Code extension passes this flag when its setting is off")
+	parser.add_argument("--calc-true-if-conversions", action="store_true",
+					help="(BETA, on by default) fold an 'exactly one of ...' conditional into a single 'calc_true_if' (or the version-safe OR/NAND pair) - a switch of its own, because it creates a counted trigger rather than re-spelling what is there")
+	parser.add_argument("--no-calc-true-if-conversions", action="store_true",
+					help="Leave 'exactly one of ...' conditionals in the form they were written in; the VS Code extension passes this flag unless 'paradox-formatter.calcTrueIfConversions' is on")
 	parser.add_argument("--safe-navigation", choices=('auto', 'fold', 'revert', 'ignore'), default=None,
 						help="Safe navigation handling: auto (mirror the file's style), fold, revert or ignore")
 	parser.add_argument("--xor-form", choices=('auto', 'calc_true_if', 'or_nand'), default=None,
@@ -4910,6 +4924,9 @@ if __name__ == "__main__":
 	# other tools (mod-updater4.4.py and the like), and the VS Code extension - the one place they
 	# default to off - says so explicitly with '--no-conditional-conversions'.
 	CONDITIONAL_CONVERSIONS = not args.no_conditional_conversions
+	# The 'exactly one' fold is on by default here too, for the same reason; the extension passes
+	# '--no-calc-true-if-conversions' unless 'paradox-formatter.calcTrueIfConversions' is on.
+	CALC_TRUE_IF_CONVERSIONS = not args.no_calc_true_if_conversions
 	XOR_FORM = args.xor_form or 'calc_true_if'
 	if SAFE_NAVIGATION_MODE is None and args.use_safe_navigation:
 		USE_SAFE_NAVIGATION = True

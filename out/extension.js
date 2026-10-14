@@ -50,6 +50,15 @@ function formatWithPythonBridge(text, forceCompact) {
 			args.push('--no-conditional-conversions');
 		}
 
+		// The 'exactly one of {A, B}' fold is a switch of its own: unlike the rewrites above it
+		// *creates* a counted trigger, so it is off unless asked for - even though the script
+		// defaults it on.
+		if (config.get('calcTrueIfConversions') === true) {
+			args.push('--calc-true-if-conversions');
+		} else {
+			args.push('--no-calc-true-if-conversions');
+		}
+
 		// How a fully written out 'exactly one of {A, B}' is written. 'calc_true_if' is the
 		// default; 'auto' mirrors the file's own style and 'or_nand' works in any version.
 		args.push('--xor-form', String(config.get('xorForm') || 'calc_true_if'));
