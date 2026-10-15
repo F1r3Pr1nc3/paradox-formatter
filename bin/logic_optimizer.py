@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -717,9 +717,16 @@ def _extract_common_and_children(and_children_nodes):
 		if not common_fps:
 			break
 
-	# Verify candidates via full equality check and collect
-	for fp in common_fps:
-		candidate = per_block_fp_sets[0][fp]
+	# Verify candidates via full equality check and collect. The candidates are walked in the
+	# first block's own order: 'common_fps' is a set, and iterating that would order the leaves by
+	# hash, which differs from process to process (Python randomizes string hashing) - a formatter
+	# cannot afford that, the same input has to come out as the very same text.
+	checked = set()
+	for candidate in per_block_nodes[0]:
+		fp = _node_fingerprint(candidate)
+		if fp not in common_fps or fp in checked:
+			continue
+		checked.add(fp)
 		# Verify candidate is indeed present in all other blocks (guard against hash collision)
 		verified = True
 		for fp_set in per_block_fp_sets[1:]:
@@ -741,6 +748,60 @@ def _extract_common_and_children(and_children_nodes):
 		modified_and_children.append(dict(child_block, val=new_val))
 
 	return common_nodes, modified_and_children
+
+# Companion of the helper above: the same factoring, but kept *inside* the OR.
+def _factor_or_ands(or_children):
+	"""'OR = { AND = {A B C} AND = {A B D} }' becomes 'AND = {A B OR = {C D}}'.
+
+	Plain distributivity, so unlike hoisting the common leaves into the surrounding list it
+	holds wherever the OR sits - in a conjunctive list, but also inside an OR/NOR/NOT or a
+	counted list, where the other helper's guard correctly refuses to hoist. That is the shape
+	the implication rewrite leaves behind when its limit was a NOR of two ANDs sharing their
+	scope leaves, e.g. 'subject_can_do_diplomacy_but_not_vote' in 00_agreement_term_values.txt:
+	'OR = { NOT = { owner? target? (r1 or r2) } NOT = { agreement_preset = preset_tributary } }'.
+
+	A branch the commons leave empty is 'true' ('X or true' is true), so the whole OR collapses
+	onto the common leaves - absorption. Returns the new child list and whether anything moved;
+	the caller runs another pass, which factors a nested pair of its own.
+	"""
+	and_blocks = [c for c in or_children if c.get('key') == 'AND' and isinstance(c.get('val'), list)]
+	if len(and_blocks) < 2:
+		return or_children, False
+
+	common_nodes, modified_blocks = _extract_common_and_children(and_blocks)
+	if not common_nodes:
+		return or_children, False
+
+	remaining = []
+	leftovers = []
+	vacuous = False
+	for block in modified_blocks:
+		if not any(n['type'] == 'node' for n in block['val']):
+			# Everything in this branch was common: the branch is true, keep only its comments.
+			vacuous = True
+			leftovers.extend(c for c in block['val'] if c['type'] == 'comment')
+		elif len(block['val']) == 1:
+			# A single leaf needs no AND of its own (comments aside - those keep the block).
+			remaining.append(block['val'][0])
+		else:
+			remaining.append(block)
+
+	merged_val = list(common_nodes) + leftovers
+	if not vacuous:
+		merged_val.append({'key': 'OR', 'op': '=', 'val': remaining, 'type': 'node'})
+	merged = {'key': 'AND', 'op': '=', 'val': merged_val, 'type': 'node'}
+
+	new_children = []
+	placed = False
+	for child in or_children:
+		if child.get('key') == 'AND' and isinstance(child.get('val'), list):
+			if not placed:
+				new_children.append(merged)
+				placed = True
+			# the other AND blocks are folded into 'merged' - drop them here
+		else:
+			new_children.append(child)
+	return new_children, True
 
 # --- 4. Lowercase Keys ---
 def lowercase_keys(node_list):
@@ -4418,6 +4479,17 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 								new_list.append(copy.deepcopy(common))
 							node['val'] = modified_children # Update the OR node's children
 							print("Simplified common factors of AND", file=sys.stderr)
+
+					# The hoist above needs a conjunctive list around the OR and every child to be
+					# an AND. Where either fails - an OR that also holds a NOT, which is what the
+					# implication rewrite leaves behind when its limit was a NOR of two ANDs - the
+					# ANDs can still be factored among themselves, because '(A and B and C) or
+					# (A and B and D)' is 'A and B and (C or D)' wherever the OR sits.
+					factored_children, factored = _factor_or_ands(node['val'])
+					if factored:
+						node['val'] = factored_children
+						changed_any = True
+						print("Factored common leaves of AND children into a nested OR", file=sys.stderr)
 		else:
 			# Normalization Rule for leaf nodes: convert < 1 or <= 0 to = 0 for non-negative triggers
 			if key.startswith(('count_', 'num_')):
