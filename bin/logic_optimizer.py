@@ -1751,10 +1751,14 @@ def _conditional_limit_and_body(cond_node):
 def _empty_body_if_else(node_list, idx):
 	"""Recognise 'if = { limit = L }' followed by 'else = { B }' (an empty if-body).
 
-	An empty body is true, so 'if L then true else B' is 'L OR B'. Returns the OR node,
-	the index of the 'else' and the nodes whose leaves decide trigger/effect - or None
-	when the shape is anything else (an if with a body, no 'else', or a comment sitting on
-	the blocks themselves, which dropping the block would lose).
+	An empty body is true, so 'if L then true else B' is 'L OR B' - in trigger script. In an
+	effect that pair runs B when L is false, which is the same 'if' with its limit negated
+	('L OR B' would not even be valid effect script); the caller picks the spelling.
+
+	Returns the OR node it would take, the index of the 'else', the nodes whose leaves decide
+	trigger/effect and the pieces the effect-side fold needs - or None when the shape is
+	anything else (an if with a body, no 'else', or a comment sitting on the blocks
+	themselves, which dropping the block would lose).
 	"""
 	children = node_list[idx].get('val')
 	if not isinstance(children, list):
@@ -1799,7 +1803,11 @@ def _empty_body_if_else(node_list, idx):
 	or_children.append(as_conjunction(else_children))
 	or_node = {'key': 'OR', 'op': '=', 'val': or_children, 'type': 'node'}
 	trigger_nodes = [c for c in limit_children + else_children if c.get('type') == 'node']
-	return {'or': or_node, 'else_idx': j, 'trigger_nodes': trigger_nodes}
+	# The pieces the effect-side fold needs: it keeps the conditional and negates its limit
+	# instead of turning the pair into an OR, and it moves the empty body's comments out.
+	return {'or': or_node, 'else_idx': j, 'trigger_nodes': trigger_nodes,
+		'limit_children': limit_children, 'else_children': else_children, 'between': between,
+		'body_comments': [c for c in children if c.get('type') == 'comment']}
 
 def _or_to_if_else(or_node):
 	"""'OR = { AND = { A ...B }  AND = { not A ...C } }' -> 'if = { limit = { A } ...B } else = { ...C }'.
@@ -2374,7 +2382,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	trigger_container = in_if_implication and scope_context == 'trigger'
 	# 'scope_context == trigger' also covers containers named '*_trigger', and None means
 	# we know nothing about the container at all (a plain custom block).
-	if CONDITIONAL_CONVERSIONS and (trigger_container or scope_context in (None, 'trigger')):
+	# 'scope_context == effect' is here for the empty-bodied if/else fold alone - the trigger
+	# rewrites below guard themselves against it, since an OR of effects is not effect script.
+	if CONDITIONAL_CONVERSIONS and (trigger_container or scope_context in (None, 'trigger', 'effect')):
 		idx = 0
 		while idx < len(node_list):
 			node = node_list[idx]
@@ -2383,7 +2393,8 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				continue
 			# The common case: a trigger 'if' with a body becomes 'OR = { NOT = { L } body }'.
 			has_else = _has_following_else(node_list, idx)
-			if (trigger_container or _if_condition_guesses_trigger(node)) and not has_else:
+			if ((trigger_container or _if_condition_guesses_trigger(node))
+					and scope_context != 'effect' and not has_else):
 				or_node = _if_implication_node(node, guaranteed)
 				if or_node is not None:
 					node_list[idx] = or_node
@@ -2396,13 +2407,46 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			# and an 'else' actually follows.
 			if has_else:
 				empty = _empty_body_if_else(node_list, idx)
-				if empty is not None and (trigger_container or _body_scan_hint(empty['trigger_nodes']) == 'trigger'):
-					node_list[idx] = empty['or']
-					del node_list[idx + 1:empty['else_idx'] + 1]
-					changed_any = True
-					print("Folded empty-bodied trigger if/else into an OR", file=sys.stderr)
-					idx += 1
-					continue
+				if empty is not None:
+					# The else body decides which spelling applies. An effect pair runs the
+					# body when the limit is false, so it becomes one 'if' with a negated limit -
+					# 'L OR B' is trigger script and would be invalid there. Only the body is
+					# scanned for that: a limit is trigger script by definition, so including it
+					# would make every pair look like a trigger.
+					body_hint = _body_scan_hint([c for c in empty['else_children'] if c['type'] == 'node'])
+					if scope_context == 'effect' or body_hint == 'effect':
+						limit_comments = [c for c in empty['limit_children'] if c['type'] == 'comment']
+						limit_nodes = [c for c in empty['limit_children'] if c['type'] == 'node']
+						negated = None
+						if len(limit_nodes) == 1 and _is_negation_node(limit_nodes[0]):
+							# A limit that already is a negation goes through its positive form,
+							# so the fold never stacks 'NOT' on 'NOT' or on a 'NOR'/'NAND'.
+							positive = _get_positive_form(limit_nodes[0], guaranteed)
+							if positive:
+								negated = limit_comments + positive
+						if negated is None:
+							negated = limit_comments + [{'key': 'NOT', 'op': '=',
+								'val': limit_nodes, 'type': 'node'}]
+						new_limit = {'key': 'limit', 'op': '=', 'val': negated, 'type': 'node'}
+						node_list[idx]['val'] = [new_limit] + empty['between'] + empty['else_children']
+						del node_list[idx + 1:empty['else_idx'] + 1]
+						# The comments of the empty body say why there was nothing to run, so
+						# they read best right above the conditional they emptied.
+						if empty['body_comments']:
+							node_list[idx:idx] = empty['body_comments']
+							idx += len(empty['body_comments'])
+						changed_any = True
+						print("Folded empty-bodied effect if/else into one if", file=sys.stderr)
+						idx += 1
+						continue
+					if scope_context != 'effect' and (trigger_container
+							or _body_scan_hint(empty['trigger_nodes']) == 'trigger'):
+						node_list[idx] = empty['or']
+						del node_list[idx + 1:empty['else_idx'] + 1]
+						changed_any = True
+						print("Folded empty-bodied trigger if/else into an OR", file=sys.stderr)
+						idx += 1
+						continue
 			idx += 1
 
 	# --- FOLD COMPLEMENTARY OR BRANCHES INTO IF/ELSE ---
