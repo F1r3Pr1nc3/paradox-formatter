@@ -164,6 +164,10 @@ TRIGGER_CONTEXT_SCOPES = {
 	'NOR', 'NAND', 'NOT', 'OR', 'AND',
 	'modifier', 'ai_weight', 'weight_modifier', 'calc_true_if',
 	"possible", "visible", "valid", # "abort_trigger", 'destroy_trigger', 'hidden_trigger',
+	# A tooltip wrapper holds trigger script: in the 4.4 script tree 1835 of them hold trigger
+	# content and none holds an effect verb - 'tooltip' is the one that wraps effects (356
+	# blocks, no trigger-only ones), and that is the one in EFFECT_CONTEXT_SCOPES.
+	'custom_tooltip',
 }
 # 'has_owner = yes' does not name a scope, so it can only be folded into a directly
 # following owner-like scope block. Every entry must be a scope link that exists
@@ -181,7 +185,7 @@ GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'NOT', 'calc_true_if')
 # unknown is deliberately not accepted.
 TRIGGER_COMPARISON_OPS = ('>', '>=', '<', '<=', '!=')
 TRIGGER_ONLY_KEYWORDS = ('exists', 'fail_text') # 'count', 'value',
-TRIGGER_KEY_PREFIXES = ("is_", "has_", "any_", "can_","num_", 'all_', "check_", "allows_", "allowed_", "was_", "exists", "years_passed", "count_")
+TRIGGER_KEY_PREFIXES = ("is_", "has_", "any_", "can_","num_", 'all_', "check_", "allows_", "allowed_", "was_", "exists", "years_passed", "count_", "uses_", "is_using_")
 
 # Effect verbs and effect containers: a conditional body holding one of these can never be
 # trigger script, so the trigger guess stops there and leaves the conditional as written.
@@ -1252,14 +1256,22 @@ def _strip_macros(text):
 
 
 def _is_known_scope(key):
-	"""True for scope links Stellaris defines (see SCOPES), e.g. 'from' or 'space_owner'."""
+	"""True for scope links Stellaris defines (see SCOPES), e.g. 'from' or 'space_owner'.
+
+	A dotted path counts when every link in it is known ('root.owner', 'from.owner.owner'),
+	and macros are stripped first ('event_target:voidworm_system_$SIZE$' is an event_target).
+	Without the dotted case a body like 'root.owner = { is_wilderness_empire = yes }' proved
+	nothing at all, which is what let the safe-navigation fold guess at it (00_rules.txt).
+	"""
 	name = str(key)
 	if name.endswith('?'):
 		name = name[:-1]
 	# Script macros stand in for literal text, so 'event_target:voidworm_system_$SIZE$' is
 	# still an event_target scope.
 	name = _strip_macros(name)
-	return bool(name) and SCOPES_RE.match(name.lower()) is not None
+	if not name:
+		return False
+	return all(SCOPES_RE.match(part.lower()) is not None for part in name.split('.'))
 
 
 def _scope_is_guaranteed(scope, guaranteed_scopes=None):
@@ -1690,6 +1702,12 @@ def _body_node_hint(node, depth=0):
 			return 'effect'
 		return None
 	children = [c for c in val if c.get('type') == 'node']
+	if key in ('if', 'else_if', 'else'):
+		# A conditional is transparent here: its 'limit' is trigger script by definition, and
+		# its body is whatever it is, so only the body is scanned. Without this a body of the
+		# shape 'X = { if = { limit = { has_star_flag = y } prev = { create_point_of_interest =
+		# { ... } } } }' proved nothing at all.
+		return _body_scan_hint([c for c in children if c.get('key') != 'limit'], depth + 1)
 	# if key in ('if', 'else_if', 'else'): return 'effect' # is the effect conditional chain, never trigger evidence.
 	if key in TRIGGER_CONTEXT_SCOPES or key_low.endswith('trigger') or key_low.startswith(TRIGGER_QUANTIFIER):
 		return _body_scan_hint(children, depth + 1)
@@ -3222,11 +3240,18 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					i += 1
 					continue
 				if scope_context is None:
-					# Unknown container (a scripted effect and the like): the conditional itself
-					# decides, exactly like every other conditional rewrite here - only one that
-					# can only be the trigger implication (a trigger-only body) keeps its form;
-					# everything else is read as 'exists AND body'.
-					if _if_condition_guesses_trigger(node):
+					# Unknown container (a scripted effect, a rule, ...): only a body that proves
+					# effect script may be read as 'exists AND body'. Trigger evidence leaves the
+					# conditional to the OR rule above, and a body that proves nothing is left
+					# exactly as written - the absence of trigger evidence is not proof of effect.
+					# This used to fold whenever the body was merely not provably trigger, which
+					# turned rule conditionals ('if = { limit = { exists = from } from = {
+					# uses_fauna_ship_sizes = yes } }') into 'from? = { ... }' - 00_rules.txt.
+					body_nodes = []
+					if isinstance(if_children, list):
+						body_nodes = [c for c in if_children
+							if c.get('type') == 'node' and c.get('key') != 'limit']
+					if _body_scan_hint(body_nodes) != 'effect':
 						i += 1
 						continue
 				if isinstance(if_children, list):
