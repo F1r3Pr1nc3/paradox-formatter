@@ -177,8 +177,11 @@ HAS_OWNER_SCOPE_GUARDS = ('owner', 'space_owner')
 # pushed into them as 'scope = { not X }'. Everything else needs the existence check
 # to stay, either as 'scope? = { ... }' or by keeping the block inside the NOT.
 ALWAYS_PRESENT_SCOPES = ('root', 'this')
-# Containers whose children are ORed: a guard inside them does not cover its siblings.
-GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'NOT', 'calc_true_if')
+# Containers whose children are ORed (or ANDed and then negated): a guard inside them does not
+# cover its siblings, so an 'exists' guard pair must never fold into 'scope?'. 'NAND' belongs
+# here as well - its children are ANDed *and the whole thing negated*, so folding the guard into
+# the block turns 'not(E and C)' into 'E and C' (00_rules.txt, can_release_vassal).
+GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'NOT', 'NAND', 'calc_true_if')
 # Positive evidence that script can only be trigger script, used to recognise a trigger
 # conditional inside a container we know nothing about (scripted triggers and similar).
 # Comparisons exist only in triggers, and these names/prefixes are trigger-only; anything
@@ -1059,8 +1062,12 @@ def _get_positive_form(node, guaranteed_scopes=None):
 
 
 def _positive_form_of(node, guaranteed_scopes=None):
-	# Positive form of NOT {A B} is just [A, B] as children of a NOT are implicitly AND'd
+	# Positive form of NOT {A B} is just [A, B] as children of a NOT are implicitly AND'd -
+	# unless one of them is a '?' block: 'not(E and C)' is not 'E and C', and no rewriting
+	# below can express it, so there is no positive form to hand out.
 	if node.get('key') == 'NOT':
+		if any(_is_safe_nav_key(c.get('key')) for c in node.get('val', []) if c.get('type') == 'node'):
+			return []
 		return node.get('val', [])
 	# Positive form of NOR {A B} is OR {A B}
 	if node.get('key') == 'NOR':
@@ -3027,10 +3034,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			print(f"Folded OR negation into safe navigation: {scope_name}?", file=sys.stderr)
 
 	# --- SAFE NAVIGATION (?=) OPTIMIZATION ---
-	# Only collapse guard + scope pairs that are logically ANDed: an implicit AND list, an
-	# AND block or a NAND block (its children are ANDed too). Inside OR/NOR/NOT - and the
-	# temporary OR wrapper built while merging NOR blocks - the two nodes are ORed, so
-	# folding them into 'scope?' would turn 'exists OR scope' into 'exists AND scope'.
+	# Only collapse guard + scope pairs that are logically ANDed: an implicit AND list or an AND
+	# block. Inside OR/NOR/NOT/NAND - and the temporary OR wrapper built while merging NOR blocks
+	# - the two nodes are ORed (resp. negated), so folding them into 'scope?' would turn
+	# 'exists OR scope' into 'exists AND scope'.
 	# 'calc_true_if' counts its entries.
 	if _ACTIVE_SAFE_NAV == 'fold' and parent_key not in GUARD_INHERIT_BLOCKED:
 		i = 0
@@ -4160,7 +4167,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 									elif '_cm_close' in node: del node['_cm_close']
 
 									changed_any = True
-								elif grandchild.get('val') == 'no' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(TRIGGER_QUANTIFIER):
+								# A '?' block is never negated by flipping its content: 'not(E and C)' is
+								# not 'E and not C', so the wrapper has to stay.
+								elif grandchild.get('val') == 'no' and not isinstance(grandchild.get('val'), list) and not child_key.startswith(TRIGGER_QUANTIFIER) and not _is_safe_nav_key(child_key):
 									grandchild['val'] = 'yes'
 
 									# Hoist child up to replace the NOT node
@@ -4207,7 +4216,33 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 			elif key == 'NAND':
 				children_nodes = [n for n in node['val'] if n['type'] == 'node']
-				if len(children_nodes) == 1:
+				# 'NAND = { exists = X  X = { C } }' means 'not(E and C)', i.e. 'not E or not C'.
+				# It must never be folded into 'X? = { ... }': that reads 'E and not C' and drops
+				# the guard's negation (00_rules.txt, can_release_vassal). Expand it into the OR
+				# with the existence guard kept explicit instead.
+				expanded = False
+				if len(children_nodes) == 2:
+					guard = next((c for c in children_nodes
+						if c.get('key') == 'exists' and not isinstance(c.get('val'), list) and c.get('val')), None)
+					block = None
+					if guard is not None:
+						block = next((c for c in children_nodes if c is not guard
+							and str(c.get('key', '')) == str(guard.get('val'))
+							and isinstance(c.get('val'), list)), None)
+					if guard is not None and block is not None:
+						negated_block = copy.deepcopy(block)
+						if _negate_numerical_comparison_recursively(negated_block, guaranteed_scopes=guaranteed):
+							comments = [c for c in node['val'] if c['type'] == 'comment']
+							negated_guard = {'key': 'NOT', 'op': '=', 'val': [copy.deepcopy(guard)], 'type': 'node'}
+							node['key'] = 'OR'
+							node['op'] = '='
+							node['val'] = [negated_guard] + comments + [negated_block]
+							node.pop('_fp', None)
+							changed_any = True
+							expanded = True
+							key = 'OR'
+							print("Expanded a NAND of an existence guard into an OR", file=sys.stderr)
+				if not expanded and len(children_nodes) == 1:
 					node['key'] = 'NOT'
 					changed_any = True
 					key = 'NOT'
