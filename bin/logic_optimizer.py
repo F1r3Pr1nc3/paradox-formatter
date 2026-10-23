@@ -185,7 +185,7 @@ GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'NOT', 'calc_true_if')
 # unknown is deliberately not accepted.
 TRIGGER_COMPARISON_OPS = ('>', '>=', '<', '<=', '!=')
 TRIGGER_ONLY_KEYWORDS = ('exists', 'fail_text') # 'count', 'value',
-TRIGGER_KEY_PREFIXES = ("is_", "has_", "any_", "can_","num_", 'all_', "check_", "allows_", "allowed_", "was_", "exists", "years_passed", "count_", "uses_", "is_using_")
+TRIGGER_KEY_PREFIXES = ("is_", "has_", "any_", "can_","num_", 'all_', "check_", "allows_", "allowed_", "was_", "exists", "years_passed", "count_", "uses_")
 
 # Effect verbs and effect containers: a conditional body holding one of these can never be
 # trigger script, so the trigger guess stops there and leaves the conditional as written.
@@ -2933,9 +2933,18 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			# the chain takes over the 'else' it was hiding in: its 'if' becomes the 'else_if'
 			links[0]['key'] = 'else_if'
 			links[0].pop('_fp', None)
+			carried = []
 			for meta in ('_cm_open', '_cm_inline', '_cm_close'):
-				if meta in else_node:
-					links[0][meta] = else_node[meta] + links[0].get(meta, '')
+				if meta not in else_node:
+					continue
+				if meta in links[0]:
+					# Both the 'else' and the link it was hiding carry a comment here. They are
+					# two comments, so they must not be glued onto one line: the link's own one
+					# moves to the top of the promoted body, the 'else' one keeps the opener.
+					carried.append({'type': 'comment', 'val': str(links[0].pop(meta)).strip()})
+				links[0][meta] = else_node[meta]
+			if carried and isinstance(links[0].get('val'), list):
+				links[0]['val'] = carried + list(links[0]['val'])
 			node_list[idx:idx + 1] = body
 			changed_any = True
 			print("Hoisted an if/else_if chain out of an else", file=sys.stderr)
@@ -3115,15 +3124,16 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					# 'exists = from' / 'is_owned_by = from' / 'from = { ... }' must stay as is.
 					if any(_uses_scope_as_value([cand], name) for name in guard_scopes):
 						break
-					# Only plain, positive leaves may sit between the guard and its block: a scope
-					# block (any 'key = { ... }', including NOT/NOR/NAND) or a negated leaf ('= no')
-					# would change what dropping the guard means, so stop there.
-					if is_block:
-						break
+					# A plain positive leaf or a whole trigger block may sit in between: the list is
+					# trigger script (a bare 'exists' cannot be anything else), the guard gates no
+					# sibling, and the folded 'x? = { ... }' re-asserts the existence itself - so
+					# 'exists = x' + 'species = { ... }' + 'x = { ... }' is the same statement as
+					# 'species = { ... }' + 'x? = { ... }' (00_rules.txt). A negated leaf ('= no')
+					# still stops the scan.
 					if cand.get('op') == '=' and cand.get('val') == 'no':
 						break
-					# Up to three such leaves may sit in between; any further and the guard is no
-					# longer clearly nearby, so leave 'exists = x' + 'x = { ... }' as written.
+					# Up to three such conditions may sit in between; any further and the guard is
+					# no longer clearly nearby, so leave 'exists = x' + 'x = { ... }' as written.
 					skipped += 1
 					if skipped > 3:
 						break
