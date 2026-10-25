@@ -4229,19 +4229,35 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						block = next((c for c in children_nodes if c is not guard
 							and str(c.get('key', '')) == str(guard.get('val'))
 							and isinstance(c.get('val'), list)), None)
-					if guard is not None and block is not None:
-						negated_block = copy.deepcopy(block)
-						if _negate_numerical_comparison_recursively(negated_block, guaranteed_scopes=guaranteed):
-							comments = [c for c in node['val'] if c['type'] == 'comment']
-							negated_guard = {'key': 'NOT', 'op': '=', 'val': [copy.deepcopy(guard)], 'type': 'node'}
-							node['key'] = 'OR'
+					if guard is not None and block is not None and not _is_safe_nav_key(block.get('key')):
+						comments = [c for c in node['val'] if c['type'] == 'comment']
+						if _ACTIVE_SAFE_NAV == 'fold':
+							# With safe navigation wanted the compact spelling is the better one:
+							# 'not(E and C)' is 'NOT = { X? = { C } }', because the '?' block
+							# re-asserts the very existence the guard checked - the block content
+							# is therefore left untouched (00_rules.txt, can_add_claim).
+							inner = copy.deepcopy(block)
+							inner['key'] = str(inner['key']) + '?'
+							node['key'] = 'NOT'
 							node['op'] = '='
-							node['val'] = [negated_guard] + comments + [negated_block]
+							node['val'] = comments + [inner]
 							node.pop('_fp', None)
 							changed_any = True
 							expanded = True
-							key = 'OR'
-							print("Expanded a NAND of an existence guard into an OR", file=sys.stderr)
+							key = 'NOT'
+							print("Folded a NAND of an existence guard into 'NOT = { X? = { ... } }'", file=sys.stderr)
+						else:
+							negated_block = copy.deepcopy(block)
+							if _negate_numerical_comparison_recursively(negated_block, guaranteed_scopes=guaranteed):
+								negated_guard = {'key': 'NOT', 'op': '=', 'val': [copy.deepcopy(guard)], 'type': 'node'}
+								node['key'] = 'OR'
+								node['op'] = '='
+								node['val'] = [negated_guard] + comments + [negated_block]
+								node.pop('_fp', None)
+								changed_any = True
+								expanded = True
+								key = 'OR'
+								print("Expanded a NAND of an existence guard into an OR", file=sys.stderr)
 				if not expanded and len(children_nodes) == 1:
 					node['key'] = 'NOT'
 					changed_any = True
