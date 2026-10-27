@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.6.5"
+__version__ = "0.6.6"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -228,6 +228,10 @@ BREAK_CAPTURE_KEYS = ('while', 'inline_script')
 
 TRIGGER_QUANTIFIER = ('any_', 'count_')
 EFFECT_QUANTIFIER = ('every_', 'ordered_', 'random_')
+# Blocks that share the 'random_' prefix but are *not* scope iterators: a weighted list, an AI
+# weight table, a name list and a weighted event table. None of them takes a 'limit', so
+# dissolving an 'if' into one of them would produce invalid script.
+EFFECT_ITERATOR_NON_SCOPES = ('random_list', 'random_weight', 'random_names', 'random_events')
 # NO_TRIGGER_VAL = {'add', 'factor', 'mult', 'multiply', 'base', 'weight'}
 
 SCOPES_RE = re.compile(f"^(?:{SCOPES})$")
@@ -2473,6 +2477,46 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						idx += 1
 						continue
 			idx += 1
+
+	# --- DISSOLVE A LONE 'if' INSIDE AN EFFECT ITERATOR ---
+	# 'every_country = { if = { limit = L body } }' runs 'body' for exactly the members that
+	# match L, which is what the iterator's own 'limit' says: 'every_country = { limit = L body }'.
+	# Only an iterator (every_*/ordered_*/random_*, minus the weight tables and name lists that
+	# share the 'random_' prefix) whose *only* child is such an 'if' is rewritten - an 'else'
+	# would have to run for the members the limit rejects, so the pair stays where it is.
+	if CONDITIONAL_CONVERSIONS:
+		for iterator in node_list:
+			if iterator.get('type') != 'node' or not isinstance(iterator.get('val'), list):
+				continue
+			iter_key = str(iterator.get('key', ''))
+			if not iter_key.startswith(EFFECT_QUANTIFIER) or iter_key in EFFECT_ITERATOR_NON_SCOPES:
+				continue
+			inner = [c for c in iterator['val'] if c.get('type') == 'node']
+			if len(inner) != 1:
+				continue
+			if_node = inner[0]
+			if if_node.get('key') != 'if' or if_node.get('op') != '=' or not isinstance(if_node.get('val'), list):
+				continue
+			limit_node = next((c for c in if_node['val'] if c.get('type') == 'node'
+				and c.get('key') == 'limit' and isinstance(c.get('val'), list)), None)
+			body = [c for c in if_node['val'] if c.get('type') == 'node' and c is not limit_node]
+			if limit_node is None or not body:
+				continue
+			for meta in ('_cm_open', '_cm_inline'):
+				if meta in if_node:
+					limit_node[meta] = if_node.pop(meta) + limit_node.get(meta, '')
+			if '_cm_close' in if_node:
+				body[-1]['_cm_close'] = if_node.pop('_cm_close') + body[-1].get('_cm_close', '')
+			dissolved = []
+			for child in iterator['val']:
+				if child is if_node:
+					dissolved.extend(if_node['val'])
+				else:
+					dissolved.append(child)
+			iterator['val'] = dissolved
+			iterator.pop('_fp', None)
+			changed_any = True
+			print(f"Dissolved the lone if of {iter_key} into the iterator's limit", file=sys.stderr)
 
 	# --- FOLD COMPLEMENTARY OR BRANCHES INTO IF/ELSE ---
 	# 'OR = { AND = { A ...B }  AND = { not A ...C } }' is 'if A then B else C', which only
