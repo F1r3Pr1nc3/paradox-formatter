@@ -319,8 +319,11 @@ def _negate_numerical_comparison_recursively(node, dry_run=False, guaranteed_sco
 		for child in children:
 			child_key = child.get('key')
 			child_op = child.get('op')
-			# Only flip if the key is *exactly* 'value' or 'count'.
-			if child_key in ('value', 'count') and child_op in negated_ops:
+			# Flip a numeric comparison child. 'amount' is the one blocks like
+			# 'has_resource = { type = volatile_motes amount 0 }' use; the plain selector next
+			# to it ('type = ...') is left untouched, only the comparison is negated
+			# (02_scripted_triggers_federations.txt).
+			if child_key in ('value', 'count', 'amount') and child_op in negated_ops:
 				# print(f"FOUND COMPARISON CHILD NODE:\n{child_key} {child}") # DEBUG
 				child_val = str(child.get('val', ''))
 
