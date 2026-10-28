@@ -2378,20 +2378,18 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				# counts as the negation of its positive form as well - scopes are assumed to
 				# exist - so 'from = { NOT = { k } }' merges into the NOR/NAND like any leaf.
 				if len(node_items) > 1 and any(n.get('key') in NEGATION_LOGIC_KEYS for n in node_items):
-					# Merge the sequence into a single NOR/NAND block. A node's comment becomes a
-					# full line at the spot that node contributes: the first node's in front of the
-					# block (that is where it was), an absorbed node's immediately before the
-					# children it brings. The comments are popped off the nodes first, so neither
-					# the merge nor the positive-form copies print them a second time.
+					# Merge the sequence into a single NOR/NAND block. The merged block takes the
+					# first node's slot; every absorbed node leaves its comment behind at its own
+					# slot, right after the block, in order. Popping them keeps the merge and the
+					# positive-form copies from printing them a second time.
 					leading_comments = _take_comment_nodes(sequence[:1])
+					absorbed_comments = _take_comment_nodes(sequence[1:])
 					combined_children = []
 					for item in sequence:
 						if item['type'] == 'comment':
 							combined_children.append(item)
 							continue
 
-						if item is not sequence[0]:
-							combined_children.extend(_take_comment_nodes([item]))
 						positive_children = _get_positive_form(item, guaranteed)
 						cm_open = item.get('_cm_open')
 						if cm_open and _carries_comment(positive_children, cm_open):
@@ -2424,6 +2422,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						'val': combined_children, 'type': 'node'}
 					new_list.extend(leading_comments)
 					new_list.append(new_combined_node)
+					new_list.extend(absorbed_comments)
 					changed_any = True
 					i = j # Move index past the processed sequence
 				else:
