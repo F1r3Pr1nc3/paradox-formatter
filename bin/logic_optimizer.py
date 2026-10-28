@@ -1393,6 +1393,29 @@ def _negated_safe_nav_block(node, guard_scopes):
 	return scope_name, inner[0]
 
 
+def _take_comment_nodes(nodes):
+	"""Turn the comments of blocks that are merged away into full comment lines.
+
+	The merge rebuilds a block from its siblings' contents, so an opener or inline comment of a
+	node that disappears ('NOR = { # why ... }') is moved out in front of the merged block rather
+	than glued onto another comment line or dropped. The comments are popped off the nodes, so
+	nothing renders them twice.
+	"""
+	out, seen = [], set()
+	for node in nodes:
+		if not isinstance(node, dict):
+			continue
+		for meta in ('_cm_open', '_cm_inline', '_cm_close'):
+			text = node.pop(meta, None)
+			if not text:
+				continue
+			text = str(text).strip()
+			if text and text not in seen:
+				seen.add(text)
+				out.append({'type': 'comment', 'val': text})
+	return out
+
+
 def _carries_comment(nodes, comment_text):
 	"""True when one of the nodes already holds that comment.
 
@@ -2355,6 +2378,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				# counts as the negation of its positive form as well - scopes are assumed to
 				# exist - so 'from = { NOT = { k } }' merges into the NOR/NAND like any leaf.
 				if len(node_items) > 1 and any(n.get('key') in NEGATION_LOGIC_KEYS for n in node_items):
+					# The comments of the nodes being merged away become full lines in front of the
+					# merged block, and are popped off the nodes so the copies made below cannot
+					# print them a second time.
+					moved_comments = _take_comment_nodes(sequence)
 					# Merge the sequence into a single NOR/NAND block
 					combined_children = []
 					for item in sequence:
@@ -2391,6 +2418,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						new_key = 'NAND'
 
 					new_combined_node = {'key': new_key, 'op': '=', 'val': combined_children, 'type': 'node'}
+					new_list.extend(moved_comments)
 					new_list.append(new_combined_node)
 					changed_any = True
 					i = j # Move index past the processed sequence
