@@ -3170,6 +3170,13 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							safe_nav_idx = j
 							safe_nav_node = cand
 							break
+					# A negation between them stops the fold outright: only plain conditions - leaves or
+					# scope blocks - may sit in between. Folding across a NOT/NOR/NAND changes what the
+					# guard means, and 'has_owner = yes' / 'NOT = { ... }' / 'space_owner = { ... }' is
+					# exactly the shape the NOR grouping then reads as a dead-NOR left-over and
+					# rewrites, reordering the script (shroud_events.txt, caravaneer_events.txt).
+					if is_block and cand_key in ('NOT', 'NOR', 'NAND'):
+						break
 					# Anything else lies between the guard and the scope block. Dropping the guard
 					# is only allowed when such a sibling cannot touch that scope:
 					# 'exists = from' / 'is_owned_by = from' / 'from = { ... }' must stay as is.
