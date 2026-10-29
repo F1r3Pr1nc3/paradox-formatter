@@ -1046,15 +1046,9 @@ def _is_negation_node(node):
 		# 'scope? = { ... }' means 'exists AND ...', so negating it is not just flipping
 		# the inner value - it must never take part in negation merging (NOR/NAND).
 		return False
-	if key == 'NOT' and is_block and any(_is_safe_nav_key(c.get('key'))
-			for c in node.get('val', []) if c.get('type') == 'node'):
-		# 'NOT = { X? = { C } }' has no positive form ('not(E and C)' is not 'E and C',
-		# see _positive_form_of), so it must not act as a negation here either: the
-		# NOR/NAND merges extend their child list with the positive form of every
-		# negation they see, and an empty one silently drops the whole condition
-		# (00_rules.txt, can_declare_war / can_colonize_planet).
-		return False
 	if key in NEGATION_LOGIC_KEYS and is_block:
+		# 'NOT = { X? = { C } }' included: it negates 'E and C' as a whole, which is exactly a
+		# NAND child, so it may merge - its positive form is its child list (_positive_form_of).
 		return True
 
 	op = node.get('op')
@@ -1128,12 +1122,13 @@ def _get_positive_form(node, guaranteed_scopes=None):
 
 
 def _positive_form_of(node, guaranteed_scopes=None):
-	# Positive form of NOT {A B} is just [A, B] as children of a NOT are implicitly AND'd -
-	# unless one of them is a '?' block: 'not(E and C)' is not 'E and C', and no rewriting
-	# below can express it, so there is no positive form to hand out.
+	# Positive form of NOT {A B} is just [A, B]: a NOT's children are implicitly AND'd, so handing
+	# them out as a list keeps 'not(E and C)' intact as long as the caller ANDs that list again -
+	# which the NOR/NAND merges and the double-negation cancel all do. A '?' child is fine: it
+	# already means 'exists and C', so the NAND child 'X? = { C }' means 'E and C' - exactly what
+	# the NOT negates. (Negating a '?' block *into* the block is the thing that must never happen;
+	# that lives in the NOT handling, guarded by _is_safe_nav_key.)
 	if node.get('key') == 'NOT':
-		if any(_is_safe_nav_key(c.get('key')) for c in node.get('val', []) if c.get('type') == 'node'):
-			return []
 		return node.get('val', [])
 	# Positive form of NOR {A B} is OR {A B}
 	if node.get('key') == 'NOR':
