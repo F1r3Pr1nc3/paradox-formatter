@@ -1008,6 +1008,14 @@ def _is_negation_node(node):
 		# 'scope? = { ... }' means 'exists AND ...', so negating it is not just flipping
 		# the inner value - it must never take part in negation merging (NOR/NAND).
 		return False
+	if key == 'NOT' and is_block and any(_is_safe_nav_key(c.get('key'))
+			for c in node.get('val', []) if c.get('type') == 'node'):
+		# 'NOT = { X? = { C } }' has no positive form ('not(E and C)' is not 'E and C',
+		# see _positive_form_of), so it must not act as a negation here either: the
+		# NOR/NAND merges extend their child list with the positive form of every
+		# negation they see, and an empty one silently drops the whole condition
+		# (00_rules.txt, can_declare_war / can_colonize_planet).
+		return False
 	if key in NEGATION_LOGIC_KEYS and is_block:
 		return True
 
@@ -1100,6 +1108,11 @@ def _positive_form_of(node, guaranteed_scopes=None):
 			child = children_nodes[0]
 			if child.get('key') == 'NOR':
 				positive = _get_positive_form(child, guaranteed_scopes)
+				if not positive:
+					# Never hand out a node with an empty body: the NOR/NAND merges
+					# extend their child list with this, so an empty list would drop
+					# the condition from the output without a trace.
+					return []
 				if len(positive) == 1 and positive[0].get('key') == 'OR':
 					# The NOR positive form already is the OR - do not wrap it again, or
 					# the extra level has to be hoisted away again further down.
@@ -1108,7 +1121,10 @@ def _positive_form_of(node, guaranteed_scopes=None):
 					new_node['val'] = [{'key': 'OR', 'op': '=', 'val': positive, 'type': 'node'}]
 				return [new_node]
 			else:
-				new_node['val'] = _get_positive_form(child, guaranteed_scopes)
+				positive = _get_positive_form(child, guaranteed_scopes)
+				if not positive:
+					return []
+				new_node['val'] = positive
 				return [new_node]
 	return []
 
@@ -1197,7 +1213,6 @@ def _resolve_xor_form(tree):
 		# version understands - is used instead. The default is 'calc_true_if' and is used as is.
 		return 'calc_true_if' if _tree_has_modern_calc_true_if(tree) else 'or_nand'
 	return XOR_FORM
-
 
 
 def _negated_scope_block(node, guard_scopes):
@@ -2101,6 +2116,8 @@ def _xor_to_or_nand(xor_node, negated=False):
 	if members is None or len(members) != 2:
 		return None
 	return _or_nand_node(members)
+
+
 def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None, if_implication_context=None, break_is_local=True):
 	changed_any = False
 	# Inside an 'allow'-like trigger block a conditional is rewritten as an OR implication.
@@ -2419,7 +2436,6 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 					new_combined_node = {'key': new_key, 'op': '=',
 						'val': combined_children, 'type': 'node'}
-
 					new_list.append(new_combined_node)
 					changed_any = True
 					i = j # Move index past the processed sequence
@@ -4302,7 +4318,6 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 									node.pop('_fp', None)
 									changed_any = True
 									print(f"Cancelled double negation across scope {child_key}", file=sys.stderr)
-
 
 			elif key == 'NAND':
 				children_nodes = [n for n in node['val'] if n['type'] == 'node']
