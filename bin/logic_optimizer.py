@@ -2101,13 +2101,6 @@ def _xor_to_or_nand(xor_node, negated=False):
 	if members is None or len(members) != 2:
 		return None
 	return _or_nand_node(members)
-
-
-
-
-
-
-
 def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, guaranteed_scopes=None, if_implication_context=None, break_is_local=True):
 	changed_any = False
 	# Inside an 'allow'-like trigger block a conditional is rewritten as an OR implication.
@@ -2378,19 +2371,25 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				# counts as the negation of its positive form as well - scopes are assumed to
 				# exist - so 'from = { NOT = { k } }' merges into the NOR/NAND like any leaf.
 				if len(node_items) > 1 and any(n.get('key') in NEGATION_LOGIC_KEYS for n in node_items):
-					# Merge the sequence into a single NOR/NAND block. The merged block takes the
-					# first node's slot; every absorbed node leaves its comment behind at its own
-					# slot, right after the block, in order. Popping them keeps the merge and the
-					# positive-form copies from printing them a second time.
-					leading_comments = _take_comment_nodes(sequence[:1])
-					absorbed_comments = _take_comment_nodes(sequence[1:])
+					# Merge the sequence into a single NOR/NAND block. A node's comment becomes a
+					# full line in front of the children that node contributes, so it ends up exactly
+					# where that node was once the positive-form wrapper is flattened.
 					combined_children = []
 					for item in sequence:
 						if item['type'] == 'comment':
 							combined_children.append(item)
 							continue
 
+						# Popped before the positive form is built, or its copy would carry it too.
+						item_comments = _take_comment_nodes([item])
 						positive_children = _get_positive_form(item, guaranteed)
+						if item_comments:
+							first = positive_children[0] if positive_children else None
+							if first is not None and first.get('type') == 'node' and isinstance(first.get('val'), list):
+								# 'OR = { c d }' from a NOR: the comment goes inside, in front of c and d.
+								first['val'] = item_comments + list(first['val'])
+							else:
+								positive_children = item_comments + positive_children
 						cm_open = item.get('_cm_open')
 						if cm_open and _carries_comment(positive_children, cm_open):
 							# The positive form is (a copy of) the item and already carries the
@@ -2420,9 +2419,8 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 					new_combined_node = {'key': new_key, 'op': '=',
 						'val': combined_children, 'type': 'node'}
-					new_list.extend(leading_comments)
+
 					new_list.append(new_combined_node)
-					new_list.extend(absorbed_comments)
 					changed_any = True
 					i = j # Move index past the processed sequence
 				else:
@@ -3706,12 +3704,16 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						# Find and skip comment nodes between group members, they will be handled via _cm_preceding
 						node_indices_in_group = sorted([i for i, child in enumerate(node['val']) if id(child) in map(id, group)])
 
-						# Skip comments preceding the first node in the group (they are moved inside via _cm_preceding)
+						# Comments sitting in front of the first member are skipped out of the rebuilt list,
+						# so they have to be put back at the top of the merged block - skipping them
+						# without re-emitting them is how a comment disappeared here.
+						leading_comment_nodes = []
 						if node_indices_in_group:
 							first_idx = node_indices_in_group[0]
 							back_idx = first_idx - 1
 							while back_idx >= 0 and node['val'][back_idx]['type'] == 'comment':
 								nodes_to_skip_ids.add(id(node['val'][back_idx]))
+								leading_comment_nodes.insert(0, node['val'][back_idx])
 								back_idx -= 1
 
 						# Create a map of index to comments preceding it (that are being skipped)
@@ -3761,6 +3763,8 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							if g_child.get('_cm_close'):
 								merged_or_children_inner.append({'type': 'comment', 'val': g_child['_cm_close'].strip()})
 
+						# The skipped leading comments come first, in their original order.
+						merged_or_children_inner = leading_comment_nodes + merged_or_children_inner
 						new_or_block = {'key': 'OR', 'op': '=', 'val': merged_or_children_inner, 'type': 'node'}
 						final_merged_node = {'key': k, 'op': '=', 'val': [new_or_block], 'type': 'node'}
 
@@ -3878,11 +3882,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					if cm_open:
 						new_children.append({'type': 'comment', 'val': cm_open.strip()})
 
-					new_children.extend(node['val'])
-
 					cm_close = node.get('_cm_close')
 					if cm_close:
-						new_children.append({'type': 'comment', 'val': cm_close.strip()})
+						new_inline = children_nodes[0].get('_cm_inline', '')
+						children_nodes[0]['_cm_inline'] = new_inline + cm_close
+
+					new_children.extend(node['val'])
 
 					new_list.extend(new_children)
 					changed_any = True
