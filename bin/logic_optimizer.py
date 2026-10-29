@@ -786,19 +786,54 @@ def _factor_or_ands(or_children):
 	if not common_nodes:
 		return or_children, False
 
+	# A comment describes the branch it sits on, so it travels with that branch into the nested
+	# OR: the inline one on the brace ('AND = { # why ...'), the comment lines right in front of
+	# the block, and the trailing one after its closing brace.
+	leading = {}
+	pending = []
+	for child in or_children:
+		if child.get('type') == 'comment':
+			pending.append(child)
+			continue
+		if any(child is block for block in and_blocks):
+			leading[id(child)] = list(pending)
+		pending = []
+	moved_comment_ids = {id(c) for comments in leading.values() for c in comments}
+
 	remaining = []
 	leftovers = []
 	vacuous = False
-	for block in modified_blocks:
-		if not any(n['type'] == 'node' for n in block['val']):
+	for index, block in enumerate(modified_blocks):
+		# Own comments of the branch in front of it. 'modified_blocks' entries are copies, so the
+		# comments are looked up on the block this one came from.
+		branch_comments = list(leading.get(id(and_blocks[index]), []))
+		has_nodes = any(n['type'] == 'node' for n in block['val'])
+		keeps_block = has_nodes and len(block['val']) != 1
+		close = block.get('_cm_close')
+		if not keeps_block:
+			# The block itself goes away, so its brace comment has to be kept as a comment line.
+			inline = block.get('_cm_open')
+			if inline:
+				branch_comments.append({'type': 'comment', 'val': inline.strip()})
+		if not has_nodes:
 			# Everything in this branch was common: the branch is true, keep only its comments.
 			vacuous = True
+			leftovers.extend(branch_comments)
 			leftovers.extend(c for c in block['val'] if c['type'] == 'comment')
-		elif len(block['val']) == 1:
-			# A single leaf needs no AND of its own (comments aside - those keep the block).
-			remaining.append(block['val'][0])
-		else:
+			if close:
+				leftovers.append({'type': 'comment', 'val': close.strip()})
+			continue
+		if keeps_block:
+			# The block survives, so it keeps its own brace and trailing comments; only the
+			# comment lines written in front of it have to travel along.
+			remaining.extend(branch_comments)
 			remaining.append(block)
+			continue
+		# A single leaf needs no AND of its own - its comments go in front of the leaf.
+		remaining.extend(branch_comments)
+		remaining.append(block['val'][0])
+		if close:
+			remaining.append({'type': 'comment', 'val': close.strip()})
 
 	merged_val = list(common_nodes) + leftovers
 	if not vacuous:
@@ -808,6 +843,9 @@ def _factor_or_ands(or_children):
 	new_children = []
 	placed = False
 	for child in or_children:
+		if id(child) in moved_comment_ids:
+			# The comment moved into the nested OR, in front of the branch it describes.
+			continue
 		if child.get('key') == 'AND' and isinstance(child.get('val'), list):
 			if not placed:
 				new_children.append(merged)
@@ -1055,6 +1093,19 @@ def _attach_comments(target, source):
 			target['_cm_open'] = target.get('_cm_open', '') + text
 		else:
 			target['_cm_inline'] = target.get('_cm_inline', '') + text
+
+
+def _carry_branch_comments(target, source):
+	"""Move the comments of a branch onto the node that branch is rewritten into.
+
+	'AND = { # why ...' keeps '# why' on the 'if' it becomes. Everything but the trailing
+	comment goes through '_attach_comments'; a comment after the closing brace of the branch
+	stays trailing, so it lands on '_cm_close' instead of on the opening brace.
+	"""
+	close = source.get('_cm_close')
+	_attach_comments(target, {k: v for k, v in source.items() if k != '_cm_close'})
+	if close and not _carries_comment([target], close):
+		target['_cm_close'] = target.get('_cm_close', '') + close
 
 
 def _get_positive_form(node, guaranteed_scopes=None):
@@ -1896,7 +1947,21 @@ def _or_to_if_else(or_node):
 		return None
 	if any(or_node.get(m) for m in ('_cm_open', '_cm_inline', '_cm_close')):
 		return None
-	if any(c.get('type') == 'comment' for c in or_node.get('val', []) + and1['val'] + and2['val']):
+	# Comment lines between the branches belong to the branch they sit in front of and move onto
+	# the 'if'/'else' it becomes; a comment inside a branch body simply stays in that body.
+	branch_leading = {}
+	pending = []
+	for child in or_node.get('val', []):
+		if child.get('type') == 'comment':
+			pending.append(child)
+			continue
+		branch_leading[id(child)] = list(pending)
+		pending = []
+	if any(c.get('type') == 'comment' for c in and1['val'] + and2['val']):
+		return None
+	# Branches that still share a condition are hoisted apart first (that is what the caller does
+	# for a conjunctive list); folding them here would repeat the shared condition in both bodies.
+	if _extract_common_and_children([and1, and2])[0]:
 		return None
 	for pos, neg in ((and1, and2), (and2, and1)):
 		for a in pos["val"]:
@@ -1910,6 +1975,16 @@ def _or_to_if_else(or_node):
 					body_neg = [c for c in neg["val"] if c is not na]
 					if_node = {'key': 'if', 'op': '=', 'val': [{'key': 'limit', 'op': '=', 'val': [a], 'type': 'node'}] + body_pos, 'type': 'node'}
 					else_node = {'key': 'else', 'op': '=', 'val': body_neg, 'type': 'node'}
+					# A comment written on the branch brace ('AND = { # why ...') describes that
+					# branch, so it moves onto the 'if'/'else' the branch becomes instead of going
+					# missing (00_rules.txt, can_access_decisions).
+					_carry_branch_comments(if_node, pos)
+					_carry_branch_comments(else_node, neg)
+					# Same for the comment lines in front of a branch.
+					if branch_leading.get(id(pos)):
+						if_node['val'] = branch_leading[id(pos)] + if_node['val']
+					if branch_leading.get(id(neg)):
+						else_node['val'] = branch_leading[id(neg)] + else_node['val']
 					return {'if': if_node, 'else': else_node}
 	return None
 
@@ -4708,11 +4783,25 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							and all(child.get('key') == 'AND' and isinstance(child.get('val'), list) for child in children)):
 						common_nodes, modified_children = _extract_common_and_children(children)
 
-						if common_nodes:
+						# A branch whose nodes are all common is 'true', and 'X or true' is true -
+						# hoisting would leave an empty 'AND = { }' behind. That shape is absorption;
+						# the factoring below collapses the OR instead.
+						branch_left = all(any(n['type'] == 'node' for n in block['val'])
+								for block in modified_children)
+						if common_nodes and branch_left:
 							changed_any = True
 							for common in common_nodes:
 								new_list.append(copy.deepcopy(common))
-							node['val'] = modified_children # Update the OR node's children
+							# Replace the AND blocks where they are: rebuilding the whole list from
+							# 'modified_children' would drop the OR's own comment children.
+							rebuilt = []
+							modified_iter = iter(modified_children)
+							for child in node['val']:
+								if child.get('key') == 'AND' and isinstance(child.get('val'), list):
+									rebuilt.append(next(modified_iter, child))
+								else:
+									rebuilt.append(child)
+							node['val'] = rebuilt
 							print("Simplified common factors of AND", file=sys.stderr)
 
 					# The hoist above needs a conjunctive list around the OR and every child to be
