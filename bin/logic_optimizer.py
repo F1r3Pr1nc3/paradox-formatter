@@ -3147,10 +3147,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			print("Hoisted an if/else_if chain out of an else", file=sys.stderr)
 
 	# --- REPAIR 'NOR = { exists = X  X = { C.. } }' ---
-	# That leftover is always false while X exists, so the script it came from can only have
-	# been the guarded, negated block: 'X? = { NOT = { C.. } }' (the tool wrote the broken
-	# shape in older versions). Only this exact shape is repaired, and only when creating
-	# safe navigation is wanted at all.
+	# The shape is the rename of a negated, guarded block: 'NOT = { exists = X  X = { C.. } }',
+	# i.e. 'not(E and C)', which older versions wrote as a NOR. It is restored to the form the tool
+	# writes for that input today - 'NOT = { X? = { C.. } }' - by putting the NOT back and folding
+	# the guard, which also makes the repair a fixpoint. Flipping the block instead and wrapping it
+	# as 'X? = { NOT = { C.. } }' negated the other half of the pair ('E and C' for 'not(E and C)').
+	# Only this exact shape is repaired, and only when creating safe navigation is wanted at all.
 	if _ACTIVE_SAFE_NAV == 'fold':
 		for idx in range(len(node_list)):
 			node = node_list[idx]
@@ -3160,24 +3162,23 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			if not dead:
 				continue
 			scope_name, block = dead
-			# Comments inside the block stay at block level: the NOT below is simplified in
-			# place by later passes, which would drop comments sitting next to its condition.
-			block_comments = [c for c in block.get('val', []) if c.get('type') == 'comment']
-			inner = {'key': 'NOT', 'op': '=', 'val': [c for c in block.get('val', []) if c.get('type') == 'node'], 'type': 'node'}
-			for meta in ('_cm_inline', '_cm_open', '_cm_close'):
-				if meta in block:
-					inner[meta] = inner.get(meta, '') + block.pop(meta)
+			guard = next((c for c in node.get('val', [])
+				if c.get('type') == 'node' and c is not block), None)
+			# Comments that sat on the guard or between the two children stay with the block that
+			# now carries the guard, and the guard's own comments move onto its opening brace.
+			carried = [c for c in node.get('val', []) if c.get('type') == 'comment']
+			if guard is not None:
+				if isinstance(guard.get('val'), list):
+					carried += [c for c in guard['val'] if c.get('type') == 'comment']
+				for meta in ('_cm_inline', '_cm_open', '_cm_close'):
+					text = guard.get(meta)
+					if text and not _carries_comment([block], text):
+						block['_cm_open'] = block.get('_cm_open', '') + text
 			block['key'] = scope_name + '?'
-			block['val'] = block_comments + [inner]
-			# The block replaces the NOR; its comments move onto the block.
-			for meta in ('_cm_inline', '_cm_open', '_cm_close'):
-				if meta in node:
-					block[meta] = node[meta] + block.get(meta, '')
-			if node.get('_cm_preceding') and not block.get('_cm_preceding'):
-				block['_cm_preceding'] = node['_cm_preceding']
-			node_list[idx] = block
+			node['key'] = 'NOT'
+			node['val'] = carried + [block]
 			changed_any = True
-			print(f"Repaired dead NOR into safe navigation: {scope_name}?", file=sys.stderr)
+			print(f"Repaired dead NOR into a negated scope block: {scope_name}?", file=sys.stderr)
 
 	# --- OR NEGATION FOLD ---
 	# 'OR = { NOT = { exists = X }  X = { NOT = { C.. } } }' says 'not(exists X) OR
