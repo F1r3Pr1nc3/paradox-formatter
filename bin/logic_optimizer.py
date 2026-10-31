@@ -178,10 +178,30 @@ HAS_OWNER_SCOPE_GUARDS = ('owner', 'space_owner')
 # to stay, either as 'scope? = { ... }' or by keeping the block inside the NOT.
 ALWAYS_PRESENT_SCOPES = ('root', 'this')
 # Containers whose children are ORed (or ANDed and then negated): a guard inside them does not
-# cover its siblings, so an 'exists' guard pair must never fold into 'scope?'. 'NAND' belongs
-# here as well - its children are ANDed *and the whole thing negated*, so folding the guard into
-# the block turns 'not(E and C)' into 'E and C' (00_rules.txt, can_release_vassal).
+# cover its siblings, so an 'exists' guard pair must never be *inherited* from there into another
+# child ('guaranteed_scopes'). 'NAND' belongs here as well - its children are ANDed *and the whole
+# thing negated*, so an 'exists' guard there proves nothing about its siblings.
 GUARD_INHERIT_BLOCKED = ('OR', 'NOR', 'NOT', 'NAND', 'calc_true_if')
+# Containers that AND their children and then negate the whole thing. Folding a guard into a '?'
+# block is still sound there, because the '?' block keeps the existence *inside* the same
+# conjunction: 'NAND = { exists = X  X = { C } }' and 'NAND = { X? = { C } }' both read
+# 'not(E and C)'. What must never happen is collapsing the container itself onto the block - that
+# is what turned 'not(E and C)' into 'E and C' (the NAND expansion further down is what handles
+# that shape now).
+GUARD_FOLD_NEGATED_AND = ('NOT', 'NAND')
+
+
+def _guard_fold_allowed(parent_key):
+	"""May a guard and its scope block be folded into one '?' node in a list under 'parent_key'?
+
+	Only where the context really is 'guard AND scope': a conjunctive list, or a container that
+	ANDs its children - and negates the whole, which a single '?' child survives, since the
+	existence stays inside the negated conjunction. Inside OR/NOR the siblings are ORed and
+	'calc_true_if' counts them, so the fold would change the meaning there.
+	"""
+	parent_key = str(parent_key or '')
+	return parent_key not in GUARD_INHERIT_BLOCKED or parent_key in GUARD_FOLD_NEGATED_AND
+
 # Positive evidence that script can only be trigger script, used to recognise a trigger
 # conditional inside a container we know nothing about (scripted triggers and similar).
 # Comparisons exist only in triggers, and these names/prefixes are trigger-only; anything
@@ -3196,12 +3216,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			print(f"Folded OR negation into safe navigation: {scope_name}?", file=sys.stderr)
 
 	# --- SAFE NAVIGATION (?=) OPTIMIZATION ---
-	# Only collapse guard + scope pairs that are logically ANDed: an implicit AND list or an AND
-	# block. Inside OR/NOR/NOT/NAND - and the temporary OR wrapper built while merging NOR blocks
-	# - the two nodes are ORed (resp. negated), so folding them into 'scope?' would turn
-	# 'exists OR scope' into 'exists AND scope'.
-	# 'calc_true_if' counts its entries.
-	if _ACTIVE_SAFE_NAV == 'fold' and parent_key not in GUARD_INHERIT_BLOCKED:
+	# Only collapse guard + scope pairs that are logically ANDed together: an implicit AND list,
+	# an AND block, or a container that ANDs its children (and negates the whole - the '?' block
+	# keeps the existence inside that conjunction, see '_guard_fold_allowed'). Inside OR/NOR the
+	# two nodes are ORed, and 'calc_true_if' counts its entries, so folding them into 'scope?'
+	# would turn 'exists OR scope' into 'exists AND scope'.
+	if _ACTIVE_SAFE_NAV == 'fold' and _guard_fold_allowed(parent_key):
 		i = 0
 		while i < len(node_list):
 			node = node_list[i]
@@ -3213,10 +3233,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					guard_scopes = (guard_scope,)
 			elif (node['type'] == 'node' and guard_key == 'has_owner' and node.get('op') == '='
 					and str(node.get('val', '')).lower() == 'yes'
-					and parent_key not in GUARD_INHERIT_BLOCKED):
+					and _guard_fold_allowed(parent_key)):
 				# 'has_owner = yes' names no scope, so it may only be folded into a directly
-				# following owner-like block (HAS_OWNER_SCOPE_GUARDS) and only in a
-				# conjunctive list, where 'guard AND scope' really is 'scope?'.
+				# following owner-like block (HAS_OWNER_SCOPE_GUARDS) and only where the context
+				# is 'guard AND scope', where 'has_owner AND owner = { ... }' really is 'owner?'.
 				guard_scopes = HAS_OWNER_SCOPE_GUARDS
 
 			if guard_scopes:
