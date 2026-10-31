@@ -2474,6 +2474,14 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 
 				node_items = [n for n in sequence if n['type'] == 'node']
 
+				# A comment run after the last negation describes whatever follows the merge, not
+				# the merged node, so it stays in the list: '# why' in front of the next branch
+				# used to be swallowed into the NAND/NOT (02_scripted_triggers_machine_age.txt,
+				# where it then read as the comment of a block it had nothing to do with).
+				while len(sequence) > 1 and sequence[-1]['type'] == 'comment':
+					sequence.pop()
+					j -= 1
+
 				# This conversion always requires a pre-existing 'NOT/NOR/NAND'. A scope block
 				# counts as the negation of its positive form as well - scopes are assumed to
 				# exist - so 'from = { NOT = { k } }' merges into the NOR/NAND like any leaf.
