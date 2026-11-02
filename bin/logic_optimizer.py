@@ -1963,7 +1963,8 @@ def _or_to_if_else(or_node):
 	if any(or_node.get(m) for m in ('_cm_open', '_cm_inline', '_cm_close')):
 		return None
 	# Comment lines between the branches belong to the branch they sit in front of and move onto
-	# the 'if'/'else' it becomes; a comment inside a branch body simply stays in that body.
+	# the 'if'/'else' it becomes; a comment inside a branch body travels with that body. The only
+	# comment that needs moving by hand is the one on the condition that gets consumed below.
 	branch_leading = {}
 	pending = []
 	for child in or_node.get('val', []):
@@ -1972,8 +1973,6 @@ def _or_to_if_else(or_node):
 			continue
 		branch_leading[id(child)] = list(pending)
 		pending = []
-	if any(c.get('type') == 'comment' for c in and1['val'] + and2['val']):
-		return None
 	# Branches that still share a condition are hoisted apart first (that is what the caller does
 	# for a conjunctive list); folding them here would repeat the shared condition in both bodies.
 	if _extract_common_and_children([and1, and2])[0]:
@@ -1988,13 +1987,19 @@ def _or_to_if_else(or_node):
 				if _limits_are_negations([a], [na]):
 					body_pos = [c for c in pos["val"] if c is not a]
 					body_neg = [c for c in neg["val"] if c is not na]
+					# 'na' is consumed by the implicit negation of the limit, so its own comments
+					# have to move onto the else body - the branch it decides.
+					consumed_comments = []
+					if isinstance(na.get('val'), list):
+						consumed_comments = [c for c in na['val'] if c.get('type') == 'comment']
 					if_node = {'key': 'if', 'op': '=', 'val': [{'key': 'limit', 'op': '=', 'val': [a], 'type': 'node'}] + body_pos, 'type': 'node'}
-					else_node = {'key': 'else', 'op': '=', 'val': body_neg, 'type': 'node'}
+					else_node = {'key': 'else', 'op': '=', 'val': consumed_comments + body_neg, 'type': 'node'}
 					# A comment written on the branch brace ('AND = { # why ...') describes that
 					# branch, so it moves onto the 'if'/'else' the branch becomes instead of going
 					# missing (00_rules.txt, can_access_decisions).
 					_carry_branch_comments(if_node, pos)
 					_carry_branch_comments(else_node, neg)
+					_carry_branch_comments(else_node, na)
 					# Same for the comment lines in front of a branch.
 					if branch_leading.get(id(pos)):
 						if_node['val'] = branch_leading[id(pos)] + if_node['val']
