@@ -3585,6 +3585,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					is_trigger_context = _body_scan_hint(node.get('val', [])) != 'effect'
 				exists_node = {'key': 'exists', 'op': '=', 'val': target_name, 'type': 'node'}
 				scope_node = {k: v for k, v in node.items() if k not in ('_fp',)}
+				# A comment on the '?' brace describes the existence guard that the unfold creates,
+				# so it moves onto the 'exists = scope' line it becomes:
+				# 'scope? = { # why ...' -> 'exists = scope # why' + 'scope = { ...'.
+				brace_comment = scope_node.pop('_cm_open', None)
+				if brace_comment:
+					exists_node['_cm_inline'] = brace_comment
 				# The parser stores leading comments twice (standalone comment nodes AND
 				# '_cm_preceding' on the next node). Splitting one node into two would carry
 				# that copy along and re-materialize it later -> duplicated comment.
@@ -3620,6 +3626,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							and node_list[prev_idx].get('key') == 'exists'
 							and str(node_list[prev_idx].get('val', '')) == target_name)
 						if prev_is_same_guard:
+							# The unfold does not write a new guard: the comment goes above the one
+							# that is already there, so it is not dropped with 'exists_node' and not
+							# glued onto that guard's own inline comment either.
+							if brace_comment:
+								node_list.insert(prev_idx, {'type': 'comment', 'val': brace_comment.strip()})
+								i += 1 # everything from prev_idx on has moved one slot down
 							node_list[i:i+1] = [scope_node]
 						else:
 							node_list[i:i+1] = [exists_node, scope_node]
