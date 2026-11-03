@@ -2009,6 +2009,81 @@ def _or_to_if_else(or_node):
 	return None
 
 
+def _next_real_sibling(node_list, idx):
+	"""The next node after 'idx' that is not a comment, or None."""
+	for j in range(idx + 1, len(node_list)):
+		if node_list[j].get('type') == 'comment':
+			continue
+		return node_list[j]
+	return None
+
+
+def _merge_nested_if(node_list, idx):
+	"""'if = { limit = A  if = { limit = B  body } }' -> 'if = { limit = { A B }  body }'.
+
+	Trigger script reads that as 'A implies (B implies body)' and effect script as 'run body when
+	A and B both hold' - both are '(A and B) implies body', so the two limits are ANDed into one.
+	Only conditionals that stand alone qualify: no 'else'/'else_if' may follow either of them (that
+	branch covers 'A is false', which a merged limit can no longer express), and the outer body may
+	hold nothing but the inner 'if' - comments aside, and those keep their place.
+	"""
+	node = node_list[idx]
+	if node.get('type') != 'node' or node.get('key') != 'if' or node.get('op') != '=':
+		return False
+	if not isinstance(node.get('val'), list):
+		return False
+	following = _next_real_sibling(node_list, idx)
+	if following is not None and following.get('key') in ('else', 'else_if'):
+		return False
+
+	limits, inner = [], None
+	for child in node['val']:
+		if child.get('type') == 'comment':
+			continue
+		if child.get('key') == 'limit' and isinstance(child.get('val'), list):
+			limits.append(child)
+			continue
+		if child.get('key') == 'if' and isinstance(child.get('val'), list) and inner is None:
+			inner = child
+			continue
+		return False # real script next to the inner 'if': the outer body is not empty
+	if len(limits) > 1 or inner is None:
+		return False
+	inner_limits = [c for c in inner['val']
+		if c.get('type') == 'node' and c.get('key') == 'limit' and isinstance(c.get('val'), list)]
+	if len(inner_limits) != 1:
+		return False
+	inner_limit = inner_limits[0]
+	inner_body = [c for c in inner['val'] if c is not inner_limit]
+	# The body has to do something - an empty one would only leave 'if = { limit = ... }' behind -
+	# and an 'else'/'else_if' inside it means the inner conditional is not a plain 'B implies body'.
+	if not any(c.get('type') == 'node' for c in inner_body):
+		return False
+	if any(c.get('type') == 'node' and c.get('key') in ('else', 'else_if') for c in inner_body):
+		return False
+
+	# The limits: A's children, then B's, with B's own brace comment kept between them.
+	limit_node = limits[0] if limits else {'key': 'limit', 'op': '=', 'val': [], 'type': 'node'}
+	merged_children = list(limit_node.get('val') or [])
+	merged_children.extend(_take_comment_nodes([inner_limit]))
+	merged_children.extend(inner_limit.get('val') or [])
+	limit_node['val'] = merged_children
+
+	# The body: what the inner conditional carried, in the slot it had in the outer body.
+	before, after, seen = [], [], False
+	for child in node['val']:
+		if child is inner:
+			seen = True
+			continue
+		if child is limit_node or child.get('type') != 'comment':
+			continue
+		(after if seen else before).append(child)
+	node['val'] = [limit_node] + before + _take_comment_nodes([inner]) + inner_body + after
+	node.pop('_fp', None)
+	print("Merged a nested conditional into the outer one", file=sys.stderr)
+	return True
+
+
 def _negates_all(negatives, positives):
 	"""True when each 'negatives' entry is the negation of a different 'positives' one."""
 	if len(negatives) != len(positives) or not negatives:
@@ -2648,6 +2723,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			if_node = inner[0]
 			if if_node.get('key') != 'if' or if_node.get('op') != '=' or not isinstance(if_node.get('val'), list):
 				continue
+			# That lone if may hold nothing but another if - merge those first, so the iterator's
+			# new limit carries every condition instead of leaving the inner one in its body
+			# ('every_country = { if = { limit = A  if = { limit = B  body } } }').
+			if_idx = next(k for k, child in enumerate(iterator['val']) if child is if_node)
+			while _merge_nested_if(iterator['val'], if_idx):
+				changed_any = True
 			limit_node = next((c for c in if_node['val'] if c.get('type') == 'node'
 				and c.get('key') == 'limit' and isinstance(c.get('val'), list)), None)
 			body = [c for c in if_node['val'] if c.get('type') == 'node' and c is not limit_node]
@@ -2668,6 +2749,19 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			iterator.pop('_fp', None)
 			changed_any = True
 			print(f"Dissolved the lone if of {iter_key} into the iterator's limit", file=sys.stderr)
+
+	# --- NESTED 'if': THE OUTER BODY HOLDS NOTHING BUT THE INNER ONE ---
+	# 'if = { limit = A  if = { limit = B  body } }' is '(A and B) implies body' in trigger script
+	# and 'run body when A and B both hold' in effect script, so the limits merge into one and the
+	# double evaluation goes away. 'else'/'else_if' on either conditional keeps it as written - those
+	# branches cover 'the limit is false', which a merged limit can no longer express.
+	if CONDITIONAL_CONVERSIONS:
+		idx = 0
+		while idx < len(node_list):
+			if _merge_nested_if(node_list, idx):
+				changed_any = True
+				continue # the merged conditional sits at 'idx' now - look at it again
+			idx += 1
 
 	# --- FOLD COMPLEMENTARY OR BRANCHES INTO IF/ELSE ---
 	# 'OR = { AND = { A ...B }  AND = { not A ...C } }' is 'if A then B else C', which only
