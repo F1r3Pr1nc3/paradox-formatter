@@ -223,6 +223,27 @@ py bin/logic_optimizer.py --safe-navigation fold --check-indent < yourfile.txt
 
 Anything still listed *after* formatting is a construct the renderer does not model (or a line that needs another pass) - useful to audit a whole mod with a single command.
 
+### 9. Hints (CLI and extension)
+
+Some shapes are recognised and deliberately left alone. Instead of rewriting them, the tool reports them:
+
+* stderr gets one `[Logic Optimizer] hint: ...` line per spot (deduplicated across the internal passes, at most ten per file, then `... and N more`);
+* the JSON output carries them as `hints`, an array of strings, so a script can act on them;
+* the extension appends them to its **Output → PDX Script Formatter** channel and flashes a status-bar message (`PDX Script Formatter: 2 hints`), never a popup - the formatter also runs on save. `Format All Files` collects them across the run and reports the total once at the end.
+
+The first one is the nested conditional that cannot be flattened:
+
+```paradox
+if = {
+    limit = { A }
+    if = { limit = { B } body }   # only node child of the outer body
+}
+else = { other }                  # ... but the outer one has an else
+```
+
+The two limits cannot be merged here: the `else` covers "A is false", and a merged `limit = { A B }` would make it cover "A holds and B does not" as well, so `other` would start running in a case where it does not run today. Flatten the inner conditional by hand, or move the `else` somewhere it belongs.
+
+
 -----
 
 ## 🚀 Installation

@@ -11,6 +11,38 @@ function getIndent(level, options) {
 	return tab.repeat(Math.max(0, level));
 }
 
+// Hints the Python tool reports (shapes it recognised but deliberately left alone). They are
+// appended to an output channel and announced on the status bar - never in a popup, because the
+// formatter also runs through 'formatOnSave' and a dialog per save would be worse than the hint.
+let hintsChannel = null;
+
+function getHintsChannel() {
+	if (!hintsChannel) {
+		hintsChannel = vscode.window.createOutputChannel('PDX Script Formatter');
+	}
+	return hintsChannel;
+}
+
+function reportFormatterHints(hints, label) {
+	if (!Array.isArray(hints) || hints.length === 0) {
+		return 0;
+	}
+	const channel = getHintsChannel();
+	if (label) {
+		channel.appendLine(label);
+	}
+	for (const hint of hints) {
+		channel.appendLine('  hint: ' + hint);
+	}
+	channel.appendLine('');
+	vscode.window.setStatusBarMessage(
+		'PDX Script Formatter: ' + hints.length + (hints.length === 1 ? ' hint' : ' hints')
+		+ ' (see Output -> PDX Script Formatter)',
+		6000
+	);
+	return hints.length;
+}
+
 /**
  * Executes the Python formatter script and returns the formatted content.
  * @param {string} text - The raw document text to format.
@@ -430,6 +462,8 @@ class ParadoxDocumentFormatter {
 	async provideDocumentFormattingEdits(document, options) {
 		const text = document.getText();
 		const bridgeResult = await formatWithPythonBridge(text);
+		reportFormatterHints(bridgeResult.hints,
+			vscode.workspace.asRelativePath(document.uri, false));
 		const content = this.applyIndentStyle(bridgeResult.content, this.effectiveIndentOptions(options));
 		const changed = bridgeResult.changed || content !== text;
 
@@ -489,6 +523,7 @@ function activate(ctx) {
 		}, async (progress, token) => {
 			let formattedCount = 0;
 			let total = files.length;
+			const collectedHints = [];
 			for (let i = 0; i < total; i++) {
 				if (token.isCancellationRequested) {
 					break;
@@ -499,6 +534,12 @@ function activate(ctx) {
 					const document = await vscode.workspace.openTextDocument(file);
 					const text = document.getText();
 					const result = await formatWithPythonBridge(text);
+					if (Array.isArray(result.hints) && result.hints.length) {
+						const name = vscode.workspace.asRelativePath(file, false);
+						for (const hint of result.hints) {
+							collectedHints.push(name + ': ' + hint);
+						}
+					}
 					const content = formatter.applyIndentStyle(result.content, formatter.effectiveIndentOptions(undefined));
 					if (result.changed || content !== text) {
 						const edit = new vscode.WorkspaceEdit();
@@ -512,7 +553,10 @@ function activate(ctx) {
 					console.error(`Error formatting ${file.fsPath}:`, err);
 				}
 			}
-			vscode.window.showInformationMessage(`Formatted ${formattedCount} files.`);
+			// Hints are reported once for the whole run, not once per file.
+			const hintCount = reportFormatterHints(collectedHints);
+			vscode.window.showInformationMessage(`Formatted ${formattedCount} files.`
+				+ (hintCount ? ` ${hintCount} hint${hintCount === 1 ? '' : 's'} - see Output -> PDX Script Formatter.` : ''));
 		});
 	});
 

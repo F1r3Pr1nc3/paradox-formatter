@@ -202,6 +202,47 @@ def _guard_fold_allowed(parent_key):
 	parent_key = str(parent_key or '')
 	return parent_key not in GUARD_INHERIT_BLOCKED or parent_key in GUARD_FOLD_NEGATED_AND
 
+
+# Shapes the optimizer recognises and deliberately leaves alone. They are collected while the
+# document is formatted and reported once per file (see 'process_text' and the CLI's JSON), because
+# the extension only shows stderr when the Python process crashes - a warning nobody sees is not a
+# warning.
+LAST_HINTS = []
+
+
+def _add_hint(text):
+	"""Remember a hint for this document, once."""
+	text = str(text or '').strip()
+	if text and text not in LAST_HINTS:
+		LAST_HINTS.append(text)
+
+
+def _hint_condition_text(limit_node):
+	"""A short, deterministic rendering of a 'limit' block for a hint message."""
+	parts = []
+	for child in limit_node.get('val', []) if isinstance(limit_node.get('val'), list) else []:
+		if child.get('type') != 'node':
+			continue
+		key = str(child.get('key', ''))
+		val = child.get('val')
+		if isinstance(val, list):
+			parts.append(key + ' = { ... }')
+		elif val is None:
+			parts.append(key)
+		else:
+			parts.append('%s %s %s' % (key, child.get('op', '='), val))
+	text = ', '.join(parts)
+	return text if len(text) <= 70 else text[:67] + '...'
+
+
+def _report_hints(limit=10):
+	"""Print the hints collected for this document, once each."""
+	for hint in LAST_HINTS[:limit]:
+		print("[Logic Optimizer] hint: " + hint, file=sys.stderr)
+	extra = len(LAST_HINTS) - limit
+	if extra > 0:
+		print("[Logic Optimizer] hint: ... and %d more" % extra, file=sys.stderr)
+
 # Positive evidence that script can only be trigger script, used to recognise a trigger
 # conditional inside a container we know nothing about (scripted triggers and similar).
 # Comparisons exist only in triggers, and these names/prefixes are trigger-only; anything
@@ -2749,6 +2790,28 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			iterator.pop('_fp', None)
 			changed_any = True
 			print(f"Dissolved the lone if of {iter_key} into the iterator's limit", file=sys.stderr)
+
+	# --- NESTED 'if' UNDER AN 'if' THAT HAS AN 'else' ---------------------------------------
+	# This nesting cannot be flattened: the 'else' covers "the outer limit is false", and merging
+	# the two limits would make it cover "outer holds and inner does not" as well. Nothing is
+	# rewritten here - the spot is reported instead, so the author can flatten it by hand (or
+	# move the 'else'), whatever the conversion switches say.
+	for idx, node in enumerate(node_list):
+		if node.get('type') != 'node' or node.get('key') != 'if' or node.get('op') != '=':
+			continue
+		following = _next_real_sibling(node_list, idx)
+		if following is None or following.get('key') not in ('else', 'else_if'):
+			continue
+		body = [c for c in node.get('val', []) if c.get('type') == 'node' and c.get('key') != 'limit'] \
+			if isinstance(node.get('val'), list) else []
+		if len(body) != 1 or body[0].get('key') != 'if' or not isinstance(body[0].get('val'), list):
+			continue
+		inner_limit = next((c for c in body[0]['val']
+			if c.get('type') == 'node' and c.get('key') == 'limit'), None)
+		_add_hint("a nested 'if' sits inside an 'if' that has an 'else'/'else_if', so the two limits "
+			"cannot be merged (that branch covers the false case of the outer limit) - flatten the "
+			"inner conditional by hand or move the 'else'/'else_if'%s"
+			% (("; inner limit: { %s }" % _hint_condition_text(inner_limit)) if inner_limit else ''))
 
 	# --- NESTED 'if': THE OUTER BODY HOLDS NOTHING BUT THE INNER ONE ---
 	# 'if = { limit = A  if = { limit = B  body } }' is '(A and B) implies body' in trigger script
@@ -5361,6 +5424,7 @@ def block_to_string(block_list):
 def process_text(content):
 	global _ACTIVE_SAFE_NAV, _ACTIVE_XOR_FORM
 	original_content = content
+	del LAST_HINTS[:] # hints belong to this document only
 	try:
 		content = content.replace('\r\n', '\n')
 		tokens = tokenize(content)
@@ -5389,6 +5453,7 @@ def process_text(content):
 			new_content += '\n'
 
 		# If the content has changed (either by logic or formatting), return it.
+		_report_hints()
 		if new_content.strip() != original_content.strip():
 			return new_content, True
 
@@ -5466,7 +5531,10 @@ if __name__ == "__main__":
 	new_content, changed = process_text(stdin_content)
 	output = {
 		"content": new_content,
-		"changed": changed
+		"changed": changed,
+		# Shapes the tool recognised but left alone, so the editor can show them (a stderr line
+		# alone is invisible there - it only surfaces when this process fails).
+		"hints": list(LAST_HINTS)
 	}
 	if args.check_indent:
 		before = check_indentation(stdin_content)
