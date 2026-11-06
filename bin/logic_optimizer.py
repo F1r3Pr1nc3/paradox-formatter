@@ -3665,10 +3665,21 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 										# Case A: Complete collapse
 										sibling_node['key'] = target_name + '?'
 
-										# Prepend comments from exists node to sibling if possible
-										cm_inline = exists_node.get('_cm_inline')
-										if cm_inline:
-											sibling_node['_cm_open'] = cm_inline + sibling_node.get('_cm_open', '')
+										# Every comment of the nodes that disappear - the guard, the 'limit'
+										# and the 'if' itself - lands on the folded block. The opening ones
+										# share one line, in the order they were written:
+										# 'fromfrom? = { # note one # limit brace # if brace'; a comment
+										# after one of the closing braces stays trailing.
+										carried = exists_node.get('_cm_inline') or ''
+										for source in (limit_node, node):
+											for meta in ('_cm_open', '_cm_inline'):
+												carried += source.get(meta) or ''
+										if carried and not _carries_comment([sibling_node], carried):
+											sibling_node['_cm_open'] = carried + sibling_node.get('_cm_open', '')
+										for source in (limit_node, node):
+											close = source.get('_cm_close')
+											if close and not _carries_comment([sibling_node], close):
+												sibling_node['_cm_close'] = sibling_node.get('_cm_close', '') + close
 
 										# Collect comments from limit node and if children
 										comments_to_keep = []
