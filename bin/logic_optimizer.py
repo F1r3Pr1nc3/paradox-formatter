@@ -666,6 +666,9 @@ def parse(tokens, text):
 			if current_list and current_list[-1].get('val') == 'PENDING_BLOCK':
 				parent_node = current_list[-1]
 				parent_node['val'] = finished_list
+				if WITH_VFIX:
+					# Mark the closing brace this recovery had to invent.
+					parent_node['_cm_close'] = parent_node.get('_cm_close', '') + ' # Vfix'
 				# Capture raw text for switch nodes (estimate using end of text)
 				if parent_node.get('key') in HYBRID_RAW_BLOCKS and '_token_start' in parent_node:
 					parent_node['_raw'] = text[parent_node['_token_start']:len(text)]
@@ -3314,6 +3317,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			block['key'] = scope_name + '?'
 			node['key'] = 'NOT'
 			node['val'] = carried + [block]
+			if WITH_VFIX:
+				# Mark the repair on the node that stays, after any comment it already carries.
+				node['_cm_open'] = node.get('_cm_open', '') + ' # Vfix'
 			changed_any = True
 			print(f"Repaired dead NOR into a negated scope block: {scope_name}?", file=sys.stderr)
 
@@ -3857,6 +3863,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					# Convert to a count_ node. The optimizer will then handle it (e.g. convert back to any_ if count > 0)
 					count_key = 'count_' + key[4:]
 					node['key'] = count_key
+					if WITH_VFIX:
+						# Mark the invalid shape this repaired, after any comment it already carries.
+						node['_cm_open'] = node.get('_cm_open', '') + ' # Vfix'
 					changed_any = True
 					print(f"Fixed invalid {key} with count condition to {count_key}", file=sys.stderr)
 					key = count_key # update key for following logic
@@ -5504,6 +5513,8 @@ if __name__ == "__main__":
 					help="Report lines whose indentation does not match their block depth (stderr, and in the JSON as indent_issues)")
 	parser.add_argument("--source-name", default="",
 					help="Name printed in front of a hint, e.g. the file being formatted (the extension passes its relative path)")
+	parser.add_argument("--with-vfix", action="store_true",
+					help="(dev) tag a repair of broken syntax with an inline '# Vfix' comment, e.g. 'NOT = { # Vfix ...' - for hand-checking a file, not for the extension")
 	args, unknown = parser.parse_known_args()
 
 	NO_COMPACT = args.no_compact
@@ -5511,6 +5522,7 @@ if __name__ == "__main__":
 	# Name shown in front of a hint - the extension passes the file it is formatting, so a hint can
 	# be located without searching the whole file for the condition.
 	SOURCE_NAME = args.source_name or ''
+	WITH_VFIX = args.with_vfix
 	# The conditional rewrites are ON by default here: the script is also imported as a library by
 	# other tools (mod-updater4.4.py and the like), and the VS Code extension - the one place they
 	# default to off - says so explicitly with '--no-conditional-conversions'.

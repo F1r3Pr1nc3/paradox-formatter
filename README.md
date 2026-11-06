@@ -223,6 +223,20 @@ py bin/logic_optimizer.py --safe-navigation fold --check-indent < yourfile.txt
 
 Anything still listed *after* formatting is a construct the renderer does not model (or a line that needs another pass) - useful to audit a whole mod with a single command.
 
+`--with-vfix` tags every repair of *broken* syntax with an inline `# Vfix` comment, so a hand-checked file shows where the tool had to fix something. It is a dev switch for running the CLI by hand - the extension never passes it, so normal output is unchanged:
+
+| repair | input | tagged output |
+|---|---|---|
+| dead `NOR` leftover (a `NOT` renamed by an old bug) | `NOR = { exists = X`<br>`X = { C } }` | `NOT = { # Vfix` |
+| `any_` trigger holding a `count` (invalid script) | `any_owned_planet = { count = 2 ... }` | `count_owned_planet = { # Vfix` |
+| closing brace missing at end of file | truncated file | `} # Vfix` per invented brace |
+
+The tag is appended *after* the comment the node already carries (`NOR = { # old bug` → `NOT = { # old bug # Vfix`), it is written once (a second run does not double it) and it stays until you delete it. A stray `}` is only reported on stderr - nothing survives that could carry a note.
+
+```bash
+py bin/logic_optimizer.py --safe-navigation fold --with-vfix < yourfile.txt
+```
+
 ### 9. Hints (CLI and extension)
 
 Some shapes are recognised and deliberately left alone. Instead of rewriting them, the tool reports them - each one names the file it came from and quotes what it found, so it can be located without searching:
