@@ -2728,7 +2728,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	# 'every_country = { if = { limit = L body } }' runs 'body' for exactly the members that
 	# match L, which is what the iterator's own 'limit' says: 'every_country = { limit = L body }'.
 	# Only an iterator (every_*/ordered_*/random_*, minus the weight tables and name lists that
-	# share the 'random_' prefix) whose *only* child is such an 'if' is rewritten - an 'else'
+	# share the 'random_' prefix) whose only script is such an 'if' is rewritten - an 'else'
 	# would have to run for the members the limit rejects, so the pair stays where it is.
 	if CONDITIONAL_CONVERSIONS:
 		for iterator in node_list:
@@ -2738,9 +2738,12 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			if not iter_key.startswith(EFFECT_QUANTIFIER) or iter_key in EFFECT_ITERATOR_NON_SCOPES:
 				continue
 			inner = [c for c in iterator['val'] if c.get('type') == 'node']
-			if len(inner) != 1:
+			own_limit = next((c for c in inner
+				if c.get('key') == 'limit' and isinstance(c.get('val'), list)), None)
+			rest = [c for c in inner if c is not own_limit]
+			if len(rest) != 1:
 				continue
-			if_node = inner[0]
+			if_node = rest[0]
 			if if_node.get('key') != 'if' or if_node.get('op') != '=' or not isinstance(if_node.get('val'), list):
 				continue
 			# That lone if may hold nothing but another if - merge those first, so the iterator's
@@ -2759,10 +2762,25 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					limit_node[meta] = if_node.pop(meta) + limit_node.get(meta, '')
 			if '_cm_close' in if_node:
 				body[-1]['_cm_close'] = if_node.pop('_cm_close') + body[-1].get('_cm_close', '')
+			# An iterator that already has a 'limit' keeps it: A (the iterator's own) and B (the
+			# if's) are both filters over the same members, so the body runs for 'A and B' either
+			# way - the two limits merge into one. That holds for every_*/ordered_*, which visit
+			# every matching member; 'random_*' picks one member and only then tests B, so there
+			# the choice itself is part of the meaning and the pair is left as written (an if's
+			# limit cannot be moved into a 'limit' that is already there).
+			if own_limit is not None:
+				if not iter_key.startswith(('every_', 'ordered_')):
+					continue
+				merged = list(own_limit.get('val') or [])
+				merged.extend(_take_comment_nodes([limit_node]))
+				merged.extend(limit_node.get('val') or [])
+				own_limit['val'] = merged
+				own_limit.pop('_fp', None)
 			dissolved = []
 			for child in iterator['val']:
 				if child is if_node:
-					dissolved.extend(if_node['val'])
+					dissolved.extend(c for c in if_node['val']
+						if own_limit is None or c is not limit_node)
 				else:
 					dissolved.append(child)
 			iterator['val'] = dissolved
