@@ -23,16 +23,13 @@ function getHintsChannel() {
 	return hintsChannel;
 }
 
-function reportFormatterHints(hints, label) {
+function reportFormatterHints(hints) {
 	if (!Array.isArray(hints) || hints.length === 0) {
 		return 0;
 	}
 	const channel = getHintsChannel();
-	if (label) {
-		channel.appendLine(label);
-	}
 	for (const hint of hints) {
-		channel.appendLine('  hint: ' + hint);
+		channel.appendLine('hint: ' + hint);
 	}
 	channel.appendLine('');
 	vscode.window.setStatusBarMessage(
@@ -47,9 +44,10 @@ function reportFormatterHints(hints, label) {
  * Executes the Python formatter script and returns the formatted content.
  * @param {string} text - The raw document text to format.
  * @param {boolean|undefined} forceCompact - If defined, overrides the noCompact setting. True = force compact, False = force no-compact.
- * @returns {Promise<{content: string, changed: boolean}>}
+ * @param {string|undefined} sourceName - Name printed in front of a hint (the file being formatted).
+ * @returns {Promise<{content: string, changed: boolean, hints?: string[]}>}
  */
-function formatWithPythonBridge(text, forceCompact) {
+function formatWithPythonBridge(text, forceCompact, sourceName) {
 	return new Promise((resolve, reject) => {
 		// NOTE: Adjust pythonPath if necessary (e.g., 'python3' or a path to a virtual environment)
 		const pythonPath = 'py';
@@ -94,6 +92,11 @@ function formatWithPythonBridge(text, forceCompact) {
 		// How a fully written out 'exactly one of {A, B}' is written. 'calc_true_if' is the
 		// default; 'auto' mirrors the file's own style and 'or_nand' works in any version.
 		args.push('--xor-form', String(config.get('xorForm') || 'calc_true_if'));
+
+		// Lets a hint name the file it came from instead of leaving the author to search for it.
+		if (sourceName) {
+			args.push('--source-name', sourceName);
+		}
 
 		// 1. Spawn Python process
 		const pythonProcess = spawn(pythonPath, args);
@@ -461,9 +464,9 @@ class ParadoxDocumentFormatter {
 	// This now uses the Python bridge for whole-document formatting
 	async provideDocumentFormattingEdits(document, options) {
 		const text = document.getText();
-		const bridgeResult = await formatWithPythonBridge(text);
-		reportFormatterHints(bridgeResult.hints,
+		const bridgeResult = await formatWithPythonBridge(text, undefined,
 			vscode.workspace.asRelativePath(document.uri, false));
+		reportFormatterHints(bridgeResult.hints);
 		const content = this.applyIndentStyle(bridgeResult.content, this.effectiveIndentOptions(options));
 		const changed = bridgeResult.changed || content !== text;
 
@@ -533,12 +536,10 @@ function activate(ctx) {
 				try {
 					const document = await vscode.workspace.openTextDocument(file);
 					const text = document.getText();
-					const result = await formatWithPythonBridge(text);
+					const result = await formatWithPythonBridge(text, undefined,
+						vscode.workspace.asRelativePath(file, false));
 					if (Array.isArray(result.hints) && result.hints.length) {
-						const name = vscode.workspace.asRelativePath(file, false);
-						for (const hint of result.hints) {
-							collectedHints.push(name + ': ' + hint);
-						}
+						collectedHints.push(...result.hints);
 					}
 					const content = formatter.applyIndentStyle(result.content, formatter.effectiveIndentOptions(undefined));
 					if (result.changed || content !== text) {

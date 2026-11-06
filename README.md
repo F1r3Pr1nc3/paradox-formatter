@@ -225,13 +225,20 @@ Anything still listed *after* formatting is a construct the renderer does not mo
 
 ### 9. Hints (CLI and extension)
 
-Some shapes are recognised and deliberately left alone. Instead of rewriting them, the tool reports them:
+Some shapes are recognised and deliberately left alone. Instead of rewriting them, the tool reports them - each one names the file it came from and quotes what it found, so it can be located without searching:
 
-* stderr gets one `[Logic Optimizer] hint: ...` line per spot (deduplicated across the internal passes, at most ten per file, then `... and N more`);
+```
+common/scripted_effects/my_effect.txt: nested 'if' inside an 'if' with an 'else' - limits not merged: limit = { has_ethic = x }
+```
+
+* stderr gets one `[Logic Optimizer] hint: ...` line per spot (deduplicated across the internal passes, at most ten per file, then `... and N more`). The file name comes from `--source-name`, which the extension fills with the relative path of the document it is formatting:
+  ```bash
+  py bin/logic_optimizer.py --source-name common/scripted_effects/my_effect.txt < my_effect.txt
+  ```
 * the JSON output carries them as `hints`, an array of strings, so a script can act on them;
 * the extension appends them to its **Output → PDX Script Formatter** channel and flashes a status-bar message (`PDX Script Formatter: 2 hints`), never a popup - the formatter also runs on save. `Format All Files` collects them across the run and reports the total once at the end.
 
-The first one is the nested conditional that cannot be flattened:
+The one shape reported today is a nested conditional that cannot be flattened - an `if` whose whole body is another `if`, while the outer one has an `else`:
 
 ```paradox
 if = {
@@ -241,7 +248,7 @@ if = {
 else = { other }                  # ... but the outer one has an else
 ```
 
-The two limits cannot be merged here: the `else` covers "A is false", and a merged `limit = { A B }` would make it cover "A holds and B does not" as well, so `other` would start running in a case where it does not run today. Flatten the inner conditional by hand, or move the `else` somewhere it belongs.
+The two limits cannot be merged here: the `else` covers "A is false", and a merged `limit = { A B }` would make it cover "A holds and B does not" as well, so `other` would start running in a case where it does not run today. Flatten the inner conditional by hand, or move the `else` somewhere it belongs. An `else_if` chain is *not* reported - each branch carries its own limit, which is a dispatch pattern rather than a nesting mistake.
 
 
 -----

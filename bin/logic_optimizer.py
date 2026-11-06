@@ -203,45 +203,12 @@ def _guard_fold_allowed(parent_key):
 	return parent_key not in GUARD_INHERIT_BLOCKED or parent_key in GUARD_FOLD_NEGATED_AND
 
 
-# Shapes the optimizer recognises and deliberately leaves alone. They are collected while the
-# document is formatted and reported once per file (see 'process_text' and the CLI's JSON), because
-# the extension only shows stderr when the Python process crashes - a warning nobody sees is not a
-# warning.
+# Shapes the optimizer recognises and deliberately leaves alone: collected per document
+# (deduplicated) and reported once by 'process_text', which the CLI mirrors into its JSON. Nothing
+# here costs anything unless a shape actually matches - the format loop is the hot path.
 LAST_HINTS = []
-
-
-def _add_hint(text):
-	"""Remember a hint for this document, once."""
-	text = str(text or '').strip()
-	if text and text not in LAST_HINTS:
-		LAST_HINTS.append(text)
-
-
-def _hint_condition_text(limit_node):
-	"""A short, deterministic rendering of a 'limit' block for a hint message."""
-	parts = []
-	for child in limit_node.get('val', []) if isinstance(limit_node.get('val'), list) else []:
-		if child.get('type') != 'node':
-			continue
-		key = str(child.get('key', ''))
-		val = child.get('val')
-		if isinstance(val, list):
-			parts.append(key + ' = { ... }')
-		elif val is None:
-			parts.append(key)
-		else:
-			parts.append('%s %s %s' % (key, child.get('op', '='), val))
-	text = ', '.join(parts)
-	return text if len(text) <= 70 else text[:67] + '...'
-
-
-def _report_hints(limit=10):
-	"""Print the hints collected for this document, once each."""
-	for hint in LAST_HINTS[:limit]:
-		print("[Logic Optimizer] hint: " + hint, file=sys.stderr)
-	extra = len(LAST_HINTS) - limit
-	if extra > 0:
-		print("[Logic Optimizer] hint: ... and %d more" % extra, file=sys.stderr)
+# Prefix for a hint ('' = none). The extension passes the file's relative path via --source-name.
+SOURCE_NAME = ''
 
 # Positive evidence that script can only be trigger script, used to recognise a trigger
 # conditional inside a container we know nothing about (scripted triggers and similar).
@@ -2074,7 +2041,8 @@ def _merge_nested_if(node_list, idx):
 	if not isinstance(node.get('val'), list):
 		return False
 	following = _next_real_sibling(node_list, idx)
-	if following is not None and following.get('key') in ('else', 'else_if'):
+	if following is not None and following.get('key') == 'else_if':
+		# An 'else_if' chain is a dispatch pattern with a limit per branch - not a nesting mistake.
 		return False
 
 	limits, inner = [], None
@@ -2101,6 +2069,17 @@ def _merge_nested_if(node_list, idx):
 	if not any(c.get('type') == 'node' for c in inner_body):
 		return False
 	if any(c.get('type') == 'node' and c.get('key') in ('else', 'else_if') for c in inner_body):
+		return False
+	# An 'else' after the outer conditional makes the merge impossible: it covers "A is false", and
+	# a merged limit would make it cover "A holds and B does not" as well. Say so, with everything
+	# needed to find the spot - the file and the inner limit as written.
+	if following is not None and following.get('key') == 'else':
+		hint = "nested 'if' inside an 'if' with an 'else' - limits not merged: " + (
+			' '.join(block_to_string([inner_limit]).split()) or '(no limit)')
+		if SOURCE_NAME:
+			hint = SOURCE_NAME + ': ' + hint
+		if hint not in LAST_HINTS:
+			LAST_HINTS.append(hint)
 		return False
 
 	# The limits: A's children, then B's, with B's own brace comment kept between them.
@@ -2790,28 +2769,6 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			iterator.pop('_fp', None)
 			changed_any = True
 			print(f"Dissolved the lone if of {iter_key} into the iterator's limit", file=sys.stderr)
-
-	# --- NESTED 'if' UNDER AN 'if' THAT HAS AN 'else' ---------------------------------------
-	# This nesting cannot be flattened: the 'else' covers "the outer limit is false", and merging
-	# the two limits would make it cover "outer holds and inner does not" as well. Nothing is
-	# rewritten here - the spot is reported instead, so the author can flatten it by hand (or
-	# move the 'else'), whatever the conversion switches say.
-	for idx, node in enumerate(node_list):
-		if node.get('type') != 'node' or node.get('key') != 'if' or node.get('op') != '=':
-			continue
-		following = _next_real_sibling(node_list, idx)
-		if following is None or following.get('key') not in ('else', 'else_if'):
-			continue
-		body = [c for c in node.get('val', []) if c.get('type') == 'node' and c.get('key') != 'limit'] \
-			if isinstance(node.get('val'), list) else []
-		if len(body) != 1 or body[0].get('key') != 'if' or not isinstance(body[0].get('val'), list):
-			continue
-		inner_limit = next((c for c in body[0]['val']
-			if c.get('type') == 'node' and c.get('key') == 'limit'), None)
-		_add_hint("a nested 'if' sits inside an 'if' that has an 'else'/'else_if', so the two limits "
-			"cannot be merged (that branch covers the false case of the outer limit) - flatten the "
-			"inner conditional by hand or move the 'else'/'else_if'%s"
-			% (("; inner limit: { %s }" % _hint_condition_text(inner_limit)) if inner_limit else ''))
 
 	# --- NESTED 'if': THE OUTER BODY HOLDS NOTHING BUT THE INNER ONE ---
 	# 'if = { limit = A  if = { limit = B  body } }' is '(A and B) implies body' in trigger script
@@ -5452,8 +5409,12 @@ def process_text(content):
 		if new_content and not new_content.endswith('\n'):
 			new_content += '\n'
 
-		# If the content has changed (either by logic or formatting), return it.
-		_report_hints()
+		# If the content has changed (either by logic or formatting), return it. Hints collected on
+		# the way go out once - the extension reads them from the JSON, not from stderr.
+		for hint in LAST_HINTS[:10]:
+			print("[Logic Optimizer] hint: " + hint, file=sys.stderr)
+		if len(LAST_HINTS) > 10:
+			print("[Logic Optimizer] hint: ... and %d more" % (len(LAST_HINTS) - 10), file=sys.stderr)
 		if new_content.strip() != original_content.strip():
 			return new_content, True
 
@@ -5512,10 +5473,15 @@ if __name__ == "__main__":
 	parser.add_argument("--use-safe-navigation", action="store_true", help="Legacy alias for --safe-navigation fold")
 	parser.add_argument("--check-indent", action="store_true",
 					help="Report lines whose indentation does not match their block depth (stderr, and in the JSON as indent_issues)")
+	parser.add_argument("--source-name", default="",
+					help="Name printed in front of a hint, e.g. the file being formatted (the extension passes its relative path)")
 	args, unknown = parser.parse_known_args()
 
 	NO_COMPACT = args.no_compact
 	SAFE_NAVIGATION_MODE = args.safe_navigation
+	# Name shown in front of a hint - the extension passes the file it is formatting, so a hint can
+	# be located without searching the whole file for the condition.
+	SOURCE_NAME = args.source_name or ''
 	# The conditional rewrites are ON by default here: the script is also imported as a library by
 	# other tools (mod-updater4.4.py and the like), and the VS Code extension - the one place they
 	# default to off - says so explicitly with '--no-conditional-conversions'.
