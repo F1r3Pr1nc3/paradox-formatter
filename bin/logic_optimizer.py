@@ -20,6 +20,11 @@ __version__ = "0.6.6"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
+# Dev option (CLI --with-vfix only, never passed by the extension): tag every repair of broken or
+# leftover syntax with an inline '# Vfix' comment, appended to the node's own comment when it has
+# one - so a hand-checked file shows where the tool had to fix something:
+# 'NOR = { exists = X  X = { C } }' -> 'NOT = { # Vfix ...'.
+WITH_VFIX = False
 CAN_MERGE_SCOPES = False # Dev option to allow merging of scopes like owner, system, etc. (with some safeguards) TODO: restrict more
 NO_COMPACT = False
 USE_SAFE_NAVIGATION = False # v4.4: legacy flag, True = fold, False = revert
