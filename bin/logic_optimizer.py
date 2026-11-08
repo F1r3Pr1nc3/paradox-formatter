@@ -681,6 +681,25 @@ def parse(tokens, text):
 	return current_list
 
 # --- 3. Node Fingerprint & Equality ---
+def _scalar_key(value):
+	"""The comparable form of a scalar value: a quoted token is the token it quotes.
+
+	'has_trait = "trait_mechanical"' and 'has_trait = trait_mechanical' are the same trigger -
+	the quotes are only token delimiters - so every rule that looks for a leaf two branches
+	share, or for the negation of one, has to see them as equal. Without that the OR in
+	'crisis_events_3.txt' (line 601 quoted, line 609 bare) never exposes the leaf the branches
+	have in common and cannot be factored. Only one pair of surrounding quotes is dropped, and
+	only around text that could have been written unquoted: a value with a space or a further
+	quote inside keeps them ('"a b"', '"he said \"x\""').
+	"""
+	text = str(value)
+	if len(text) > 1 and text[0] == '"' and text[-1] == '"':
+		inner = text[1:-1]
+		if inner and '"' not in inner and not any(ch.isspace() for ch in inner):
+			return inner
+	return text
+
+
 def _node_fingerprint(node):
 	"""
 	Compute a hashable fingerprint tuple for fast equality pre-checks.
@@ -700,7 +719,7 @@ def _node_fingerprint(node):
 			child_fps = tuple(_node_fingerprint(c) for c in val if c.get('type') == 'node')
 			fp = (t, node.get('key', ''), node.get('op', ''), node.get('val_key', ''), child_fps)
 		else:
-			fp = (t, node.get('key', ''), node.get('op', ''), str(val))
+			fp = (t, node.get('key', ''), node.get('op', ''), _scalar_key(val))
 	else:
 		fp = (t,)
 	node['_fp'] = fp
@@ -741,7 +760,47 @@ def nodes_are_equal(n1, n2):
 			if not nodes_are_equal(c1[i], c2[i]):
 				return False
 		return True
-	return v1 == v2
+	# A leaf's value is compared in its comparable form too, so a node that quotes its value and
+	# one that does not are the same trigger ('_scalar_key'). Raw blocks are script text and keep
+	# the comparison exact.
+	if v1 == v2:
+		return True
+	if n1['type'] == 'node' and isinstance(v1, str) and isinstance(v2, str):
+		return _scalar_key(v1) == _scalar_key(v2)
+	return False
+
+def _split_single_item_logic(node):
+	"""'AND = { X }' / 'OR = { X }' / 'this = { X }' holds one script node, so it is that node.
+
+	Returns the children to splice in place of the block (comments included, with the block's
+	own brace comments carried onto the survivor), or None when the block is not a single-item,
+	single-script logic block.
+
+	The same rule runs in two places: where the block sits in a node list, and - before the
+	if/else fold looks at an OR - on the OR's arms, because factoring a shared leaf out of two
+	AND arms can empty one of them down to 'AND = { NOT S }'. Left wrapped, the OR still looks
+	like 'two AND blocks' to that fold and gets spelled as a conditional; unwrapped it reduces
+	to a NAND in the pass the OR block itself runs.
+	"""
+	if node.get('key') not in ('AND', 'OR', 'this'):
+		return None
+	if not isinstance(node.get('val'), list):
+		return None
+	children_nodes = [n for n in node['val'] if n['type'] == 'node']
+	if len(children_nodes) != 1:
+		return None
+	new_children = []
+	cm_open = node.get('_cm_open')
+	if cm_open:
+		new_children.append({'type': 'comment', 'val': cm_open.strip()})
+	cm_close = node.get('_cm_close')
+	if cm_close:
+		new_inline = children_nodes[0].get('_cm_inline', '')
+		children_nodes[0]['_cm_inline'] = new_inline + cm_close
+	new_children.extend(node['val'])
+	return new_children
+
+
 
 # Helper for extracting common factors from AND children
 def _extract_common_and_children(and_children_nodes):
@@ -1961,13 +2020,40 @@ def _empty_body_if_else(node_list, idx):
 		'limit_children': limit_children, 'else_children': else_children, 'between': between,
 		'body_comments': [c for c in children if c.get('type') == 'comment']}
 
+def _splice_single_item_arms(or_node):
+	"""Replace 'AND = { X }' (and 'OR'/'this') arms of an OR with 'X' where X is the only node.
+
+	Factoring a shared leaf out of two AND arms can empty one of them down to 'AND = { NOT S }'.
+	The OR then still reads as 'two AND blocks' to '_or_to_if_else', which spells it as an
+	if/else that repeats the shared leaf and - in a trigger list, where an 'and' is implied by
+	juxtaposition - only says the same thing at five times the length. Spliced, the arm is a
+	bare 'NOT = { S }', which is exactly the shape the OR block below reduces to a NAND
+	('OR = { NOT S  AND = { S  NOT C } }' -> 'NAND = { S C }').
+
+	Returns True when anything moved; the caller re-examines the node on the next pass.
+	"""
+	spliced = []
+	changed = False
+	for child in or_node.get('val', []):
+		replacement = _split_single_item_logic(child) if isinstance(child, dict) else None
+		if replacement is None:
+			spliced.append(child)
+		else:
+			spliced.extend(replacement)
+			changed = True
+	if changed:
+		or_node['val'] = spliced
+	return changed
+
+
 def _or_to_if_else(or_node):
 	"""'OR = { AND = { A ...B }  AND = { not A ...C } }' -> 'if = { limit = { A } ...B } else = { ...C }'.
 
 	Both branches share the same condition, one positive, one negated, so '(A AND B) OR
 	(not A AND C)' is 'if A then B else C' - which evaluates A once. Returns None when the
 	OR is anything else (not exactly two AND blocks, no complementary condition, or a
-	comment the rewrite would drop).
+	comment the rewrite would drop). A branch that ends up empty takes the 'else' with it -
+	'if A then B' alone already says that.
 	"""
 	children = [c for c in or_node.get('val', []) if c.get('type') == 'node']
 	if len(children) != 2:
@@ -2021,6 +2107,12 @@ def _or_to_if_else(or_node):
 						if_node['val'] = branch_leading[id(pos)] + if_node['val']
 					if branch_leading.get(id(neg)):
 						else_node['val'] = branch_leading[id(neg)] + else_node['val']
+					# An 'else' that ends up holding nothing says nothing: '(A and B) or (not A)'
+					# is 'A implies B', and the emptied branch is exactly the case the arm
+					# splicing produces ('AND = { not A }' loses its own negation). Written out,
+					# it is a dead block that also has to be carried through every later pass.
+					if not else_node['val']:
+						return {'if': if_node}
 					return {'if': if_node, 'else': else_node}
 	return None
 
@@ -2855,14 +2947,24 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 		if or_node.get('key') != 'OR':
 			i += 1
 			continue
+		# An arm the factoring above emptied ('AND = { NOT S }') is just that node; spliced, the
+		# OR has the shape the OR block below reduces to a NAND, and the if/else fold no longer
+		# matches it (it needs two AND arms).
+		if _splice_single_item_arms(or_node):
+			changed_any = True
+			i += 1
+			continue
 		folded = _or_to_if_else(or_node)
 		if folded is None:
 			i += 1
 			continue
-		node_list[i:i + 1] = [folded['if'], folded['else']]
+		replacement = [folded['if']]
+		if folded.get('else') is not None:
+			replacement.append(folded['else'])
+		node_list[i:i + 1] = replacement
 		changed_any = True
 		print("Folded complementary OR branches into if/else", file=sys.stderr)
-		i += 2
+		i += len(replacement)
 
 	# --- 'EXACTLY ONE' WRITTEN AS A TRIGGER IF/ELSE ---------------------------------------------
 	# The same expression the OR arms above fold into, spelled as a conditional pair - the shape
@@ -4163,22 +4265,10 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							key = first_key
 
 			if key in ('AND', 'OR', 'this'):
-				children_nodes = [n for n in node['val'] if n['type'] == 'node'] # , 'raw_block'
-				if len(children_nodes) == 1:
-					# The AND/OR is redundant. Replace it with its children, preserving comments.
-					new_children = []
-					cm_open = node.get('_cm_open')
-					if cm_open:
-						new_children.append({'type': 'comment', 'val': cm_open.strip()})
-
-					cm_close = node.get('_cm_close')
-					if cm_close:
-						new_inline = children_nodes[0].get('_cm_inline', '')
-						children_nodes[0]['_cm_inline'] = new_inline + cm_close
-
-					new_children.extend(node['val'])
-
-					new_list.extend(new_children)
+				# The AND/OR is redundant. Replace it with its children, preserving comments.
+				spliced = _split_single_item_logic(node)
+				if spliced is not None:
+					new_list.extend(spliced)
 					changed_any = True
 					print("Simplified AND and OR with single item", file=sys.stderr)
 					continue # Important: skip appending the original 'node'
@@ -4928,10 +5018,19 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							print("Created NAND from OR-AND structure", file=sys.stderr)
 
 				# NAND <=> OR = { NOT ... }
-				if all(child.get('key') == 'NOT' and isinstance(child.get('val'), list) for child in children):
+				if all(child.get('key') == 'NOT' and isinstance(child.get('val'), list) for child in children) \
+						and not any(c['type'] == 'raw_block' for c in node['val']):
+					# Walk the OR's own children, not just the negations: a comment written
+					# between the arms ('crisis_events_3.txt': '# Synthetically Ascended
+					# Empires') describes the arm behind it and has to keep its place inside the
+					# NAND - rebuilding from the negations alone would drop it. A switch block in
+					# the OR is script, not a negation, so that shape stays an OR.
 					new_children = []
-					for child in children:
-						not_children = [n for n in child['val'] if n['type'] == 'node']
+					for item in node['val']:
+						if item['type'] == 'comment':
+							new_children.append(item)
+							continue
+						not_children = [n for n in item['val'] if n['type'] == 'node']
 						new_children.extend(not_children)
 					node['key'] = 'NAND'
 					node['val'] = new_children
