@@ -1601,12 +1601,32 @@ def _has_following_else(node_list, idx):
 
 
 def _is_last_script(node_list, node):
-	"""True when 'node' is the last non-comment entry of its list."""
-	for child in reversed(node_list):
+	"""True when 'node' is the last non-comment entry of its list - its own chain links aside.
+
+	The links of the node's chain ('else_if'/'else' behind an 'if'/'else_if') are not script that
+	follows it: a 'break' in the branch they hang off stops the block in front of them, so the
+	branch really is the last thing that runs. Counting them was what kept a 'break' inside
+	'if = { limit = A ... break }' from ever being folded once the sibling behind it became an
+	'else_if' of the same chain - the dispatch-chain fold rewrites that sibling first, in the same
+	call, and from then on the branch was no longer "last" ('pirate_events.txt', pirate.5).
+	"""
+	index = None
+	for i, child in enumerate(node_list):
+		if child is node:
+			index = i
+			break
+	if index is None:
+		return False
+	in_chain = (str(node.get('key', '')) in ('if', 'else_if', 'else')
+		and node.get('op') == '=')
+	for child in node_list[index + 1:]:
 		if child.get('type') == 'comment':
 			continue
-		return child is node
-	return False
+		if (in_chain and child.get('type') == 'node' and child.get('op') == '='
+				and str(child.get('key', '')) in ('else_if', 'else')):
+			continue
+		return False
+	return True
 
 
 def _holds_script(nodes):
