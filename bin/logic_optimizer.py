@@ -858,6 +858,61 @@ def _extract_common_and_children(and_children_nodes):
 
 	return common_nodes, modified_and_children
 
+# The same question one level down: what an AND-shaped rule can read a branch as. The always-on
+# NOR merging writes 'AND = { a NOT = { b } }' as 'NOR = { not-a b }', so a branch that factored on
+# one pass carries a NOR on the next and became invisible to the three rules that want AND arms -
+# the hoist, '_factor_or_ands' and '_or_to_if_else'. These helpers read a NOR arm as the
+# conjunction
+# it is ('not a and not b') without rewriting anything: a rule that applies builds its result from
+# the view, one that does not leaves the arm exactly as it came in ('infernals_1_events.txt'
+# infernals.25, 'marauder_events.txt' marauder.4).
+def _negated_node(node):
+	"""The negation of 'node', in the shortest form the tool already writes.
+
+	A comparison or a '= no' leaf flips to its positive form ('planet_devastation < 15' becomes
+	'planet_devastation >= 15', what the negation machinery writes), anything else is wrapped in a
+	'NOT' block. The node itself is never touched - the result belongs to a rewritten tree.
+	"""
+	flipped = copy.deepcopy(node)
+	if not isinstance(flipped.get('val'), list) and _negate_numerical_comparison_recursively(flipped):
+		flipped.pop('_fp', None)
+		return flipped
+	return {'key': 'NOT', 'op': '=', 'val': [node], 'type': 'node'}
+
+
+def _conjunctive_view(arm):
+	"""The children an AND-shaped rule reads, or None when the arm has no conjunctive reading.
+
+	'AND = { a b }' answers its own children, comments included. 'NOR = { a b }' means 'not a and not
+	b', so it answers the negation of each child - exactly the 'AND = { a NOT = { b } }' the NOR merging
+	started from. 'NAND' is not conjunctive ('not(a and b)' is an OR) and answers None, and so does a
+	NOR holding comments: the comments between its children would have nowhere to go.
+	"""
+	if not isinstance(arm, dict) or arm.get('op') != '=' or not isinstance(arm.get('val'), list):
+		return None
+	key = str(arm.get('key', ''))
+	if key == 'AND':
+		return list(arm['val'])
+	if key == 'NOR':
+		if any(c.get('type') != 'node' for c in arm['val']):
+			return None
+		return [_negated_node(c) for c in arm['val'] if c.get('type') == 'node']
+	return None
+
+
+def _conjunctive_block(arm, view):
+	"""The block '_extract_common_and_children' factors: the arm itself when it is an AND (so its
+	brace and trailing comments survive), a stand-in 'AND' carrying the same comments otherwise.
+	"""
+	if str(arm.get('key', '')) == 'AND':
+		return arm
+	block = {'key': 'AND', 'op': '=', 'val': view, 'type': 'node'}
+	for meta in ('_cm_open', '_cm_inline', '_cm_close'):
+		if arm.get(meta):
+			block[meta] = arm[meta]
+	return block
+
+
 # Companion of the helper above: the same factoring, but kept *inside* the OR.
 def _factor_or_ands(or_children):
 	"""'OR = { AND = {A B C} AND = {A B D} }' becomes 'AND = {A B OR = {C D}}'.
@@ -873,6 +928,10 @@ def _factor_or_ands(or_children):
 	onto the common leaves - absorption. Returns the new child list and whether anything moved;
 	the caller runs another pass, which factors a nested pair of its own.
 	"""
+	# AND arms only, deliberately: a NOR arm reads as a conjunction too ('_conjunctive_view'), and
+	# factoring through it gave the *opposite* of what this helper is for - 'AND = { A OR = { B C } }'
+	# came back out as two arms repeating A ('crisis_events_2.txt' line 2305). The hoist above
+	# takes NOR arms, which is where they pay off ('marauder_events.txt' marauder.4).
 	and_blocks = [c for c in or_children if c.get('key') == 'AND' and isinstance(c.get('val'), list)]
 	if len(and_blocks) < 2:
 		return or_children, False
@@ -941,7 +1000,7 @@ def _factor_or_ands(or_children):
 		if id(child) in moved_comment_ids:
 			# The comment moved into the nested OR, in front of the branch it describes.
 			continue
-		if child.get('key') == 'AND' and isinstance(child.get('val'), list):
+		if any(child is block for block in and_blocks):
 			if not placed:
 				new_children.append(merged)
 				placed = True
@@ -1137,6 +1196,11 @@ def _is_negation_node(node):
 		return False
 	is_block = isinstance(node.get('val'), list)
 	key = node.get('key')
+	if key in NON_NEGATABLE_SCOPES:
+		# Control flow is never a negation, however negated its body is: 'else = { NOT = { c } }'
+		# recursed into its single child and read as one, so a NOR merge could swallow the branch
+		# ('crisis_events_1.txt', where an OR fold leaves an else in front of two negations).
+		return False
 	if _is_safe_nav_key(key):
 		# 'scope? = { ... }' means 'exists AND ...', so negating it is not just flipping
 		# the inner value - it must never take part in negation merging (NOR/NAND).
@@ -2079,8 +2143,11 @@ def _or_to_if_else(or_node):
 	if len(children) != 2:
 		return None
 	and1, and2 = children
-	if (and1.get('key') != 'AND' or and2.get('key') != 'AND'
-		or not isinstance(and1.get('val'), list) or not isinstance(and2.get('val'), list)):
+	# A branch the NOR merging re-spelled ('NOR = { not-a b }' for 'AND = { a NOT = { b } }') is
+	# read as the conjunction it is, so a file that was formatted once still folds on the next
+	# run ('infernals_1_events.txt' infernals.25).
+	view1, view2 = _conjunctive_view(and1), _conjunctive_view(and2)
+	if view1 is None or view2 is None:
 		return None
 	if any(or_node.get(m) for m in ('_cm_open', '_cm_inline', '_cm_close')):
 		return None
@@ -2097,18 +2164,19 @@ def _or_to_if_else(or_node):
 		pending = []
 	# Branches that still share a condition are hoisted apart first (that is what the caller does
 	# for a conjunctive list); folding them here would repeat the shared condition in both bodies.
-	if _extract_common_and_children([and1, and2])[0]:
+	if _extract_common_and_children([_conjunctive_block(and1, view1),
+			_conjunctive_block(and2, view2)])[0]:
 		return None
-	for pos, neg in ((and1, and2), (and2, and1)):
-		for a in pos["val"]:
+	for pos, neg, pos_view, neg_view in ((and1, and2, view1, view2), (and2, and1, view2, view1)):
+		for a in pos_view:
 			if a.get('type') != 'node' or _is_negation_node(a):
 				continue
-			for na in neg["val"]:
+			for na in neg_view:
 				if na.get('type') != 'node' or not _is_negation_node(na):
 					continue
 				if _limits_are_negations([a], [na]):
-					body_pos = [c for c in pos["val"] if c is not a]
-					body_neg = [c for c in neg["val"] if c is not na]
+					body_pos = [c for c in pos_view if c is not a]
+					body_neg = [c for c in neg_view if c is not na]
 					# 'na' is consumed by the implicit negation of the limit, so its own comments
 					# have to move onto the else body - the branch it decides.
 					consumed_comments = []
@@ -5097,8 +5165,11 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					if (parent_key not in GUARD_INHERIT_BLOCKED
 							and not parent_key.startswith(TRIGGER_QUANTIFIER)
 							and not parent_key.startswith(EFFECT_QUANTIFIER)
-							and all(child.get('key') == 'AND' and isinstance(child.get('val'), list) for child in children)):
-						common_nodes, modified_children = _extract_common_and_children(children)
+							and all(_conjunctive_view(child) is not None for child in children)):
+						# A NOR arm is read as the conjunction it is ('NOR = { not-a b }' is 'AND = { a NOT = { b } }'),
+						# so the leaves a file still shares after the always-on NOR merging factor again.
+						common_nodes, modified_children = _extract_common_and_children(
+							[_conjunctive_block(child, _conjunctive_view(child)) for child in children])
 
 						# A branch whose nodes are all common is 'true', and 'X or true' is true -
 						# hoisting would leave an empty 'AND = { }' behind. That shape is absorption;
@@ -5114,7 +5185,11 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							rebuilt = []
 							modified_iter = iter(modified_children)
 							for child in node['val']:
-								if child.get('key') == 'AND' and isinstance(child.get('val'), list):
+								if _conjunctive_view(child) is not None:
+									# For an AND arm this is the arm with the common leaves taken out; for a NOR
+									# arm it is the stand-in, which is an AND of the remaining negations - what
+									# 'NOR = { a b }' minus one child really is, and the single-item splice turns
+									# a one-child result into 'NOT = { ... }'.
 									rebuilt.append(next(modified_iter, child))
 								else:
 									rebuilt.append(child)
