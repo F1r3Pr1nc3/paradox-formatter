@@ -880,6 +880,28 @@ def _negated_node(node):
 	return {'key': 'NOT', 'op': '=', 'val': [node], 'type': 'node'}
 
 
+def _expanded_conjuncts(children):
+	"""'children' with every comment-free nested NOR replaced by its negated children.
+
+	'NOR = { a b }' is 'not a and not b', so an arm holding one shares those negated leaves with a
+	sibling that names them directly. That is the shape 'story_events.txt' story.2 has: the shared
+	'not has_ethic = ...' sits inside the first arm's NOR and at the top of the second arm's NOR,
+	and comparing only the arms' direct children saw nothing in common, so the OR was spelled as an
+	if/else instead of factoring. A NOR holding comments is left alone - they would have to go
+	somewhere - and so is a NAND, whose meaning ('not(a and b)') is disjunctive.
+	"""
+	expanded = []
+	for child in children:
+		if (isinstance(child, dict) and child.get('type') == 'node'
+				and str(child.get('key', '')) == 'NOR' and child.get('op') == '='
+				and isinstance(child.get('val'), list)
+				and all(c.get('type') == 'node' for c in child['val'])):
+			expanded.extend(_negated_node(c) for c in child['val'])
+			continue
+		expanded.append(child)
+	return expanded
+
+
 def _conjunctive_view(arm):
 	"""The children an AND-shaped rule reads, or None when the arm has no conjunctive reading.
 
@@ -898,6 +920,39 @@ def _conjunctive_view(arm):
 			return None
 		return [_negated_node(c) for c in arm['val'] if c.get('type') == 'node']
 	return None
+
+
+def _shared_through_nested_nor(views):
+	"""The leaves every view shares once a nested NOR is read as its negated children.
+
+	Used to spot what the plain comparison cannot see ('story_events.txt' story.2: the shared
+	'not has_ethic = ...' sits inside the first arm's NOR and at the top of the second arm's NOR).
+	Only the comparison is expanded - the arms are rebuilt from their own children, so nothing is
+	un-NORed unless a common leaf really came out of a nested NOR.
+	"""
+	expanded = [_expanded_conjuncts(list(view)) for view in views]
+	if not all(any(c.get('type') == 'node' for c in view) for view in expanded):
+		return []
+	common_nodes, _modified = _extract_common_and_children(
+		[{'key': 'AND', 'op': '=', 'val': view, 'type': 'node'} for view in expanded])
+	return common_nodes
+
+
+def _arm_without(arm, view, common_nodes):
+	"""'arm' as the conjunction the expansion describes, minus the common leaves.
+
+	The arm's own children are preferred (that is what '_conjunctive_block' hands out), but a leaf
+	a nested NOR hides is not among them, so that arm is re-spelled: 'AND = { S NOR = { X G } }'
+	minus 'not G' is 'AND = { S NOT = { X } }'. The arm's own brace comments come along.
+	"""
+	common_keys = {_node_fingerprint(n) for n in common_nodes}
+	block = {'key': 'AND', 'op': '=', 'type': 'node',
+		'val': [c for c in _expanded_conjuncts(list(view))
+				if _node_fingerprint(c) not in common_keys]}
+	for meta in ('_cm_open', '_cm_inline', '_cm_close'):
+		if arm.get(meta):
+			block[meta] = arm[meta]
+	return block
 
 
 def _conjunctive_block(arm, view):
@@ -2166,6 +2221,11 @@ def _or_to_if_else(or_node):
 	# for a conjunctive list); folding them here would repeat the shared condition in both bodies.
 	if _extract_common_and_children([_conjunctive_block(and1, view1),
 			_conjunctive_block(and2, view2)])[0]:
+		return None
+	# The same goes for a leaf one arm only shares through a nested NOR: hoisting it out gives the
+	# shorter 'NOR = { L AND = { ... } }' ('story_events.txt' story.2), which the fold below would
+	# otherwise pre-empt by repeating the leaf in both bodies.
+	if _shared_through_nested_nor([view1, view2]):
 		return None
 	for pos, neg, pos_view, neg_view in ((and1, and2, view1, view2), (and2, and1, view2, view1)):
 		for a in pos_view:
@@ -5170,6 +5230,17 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 						# so the leaves a file still shares after the always-on NOR merging factor again.
 						common_nodes, modified_children = _extract_common_and_children(
 							[_conjunctive_block(child, _conjunctive_view(child)) for child in children])
+
+						# A leaf can be shared through a nested NOR as well: 'AND = { S NOR = { X G } }' against
+						# 'NOR = { S G }' shares 'not G', which the plain comparison never sees because it stops
+						# at the arms' own children ('story_events.txt' story.2). Only the comparison is
+						# expanded, and an arm is re-spelled only when the leaf came out of its nested NOR.
+						if not common_nodes:
+							views = [_conjunctive_view(child) for child in children]
+							common_nodes = _shared_through_nested_nor(views)
+							if common_nodes:
+								modified_children = [_arm_without(child, view, common_nodes)
+									for child, view in zip(children, views)]
 
 						# A branch whose nodes are all common is 'true', and 'X or true' is true -
 						# hoisting would leave an empty 'AND = { }' behind. That shape is absorption;
