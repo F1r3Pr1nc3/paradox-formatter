@@ -874,9 +874,16 @@ def _negated_node(node):
 	'NOT' block. The node itself is never touched - the result belongs to a rewritten tree.
 	"""
 	flipped = copy.deepcopy(node)
-	if not isinstance(flipped.get('val'), list) and _negate_numerical_comparison_recursively(flipped):
-		flipped.pop('_fp', None)
-		return flipped
+	if not isinstance(flipped.get('val'), list):
+		if _negate_numerical_comparison_recursively(flipped):
+			flipped.pop('_fp', None)
+			return flipped
+		# 'x = yes' is negated by 'x = no' - the pair '_is_negation' and '_positive_form_of' read
+		# as one, so a view of a NOR holding 'x = yes' compares equal to an arm writing 'x = no'.
+		if flipped.get('op') == '=' and str(flipped.get('val')).lower() == 'yes':
+			flipped['val'] = 'no'
+			flipped.pop('_fp', None)
+			return flipped
 	return {'key': 'NOT', 'op': '=', 'val': [node], 'type': 'node'}
 
 
@@ -900,7 +907,8 @@ def _conjunctive_view(arm, expand=False):
 	'AND = { a b }' answers its own children, comments included. 'NOR = { a b }' means 'not a and not
 	b', so it answers the negation of each child - exactly the 'AND = { a NOT = { b } }' the NOR merging
 	started from. 'NAND' is not conjunctive ('not(a and b)' is an OR) and answers None, and so does a
-	NOR holding comments: the comments between its children would have nowhere to go.
+	NOR holding anything but script and comments (a raw block is not a negation). A comment keeps its
+	place in the answer, so it rides along into whatever the arm becomes, like an AND arm's do.
 
 	'expand' asks for one level deeper: every nested NOR in the answer is replaced by its own
 	negated children, so a leaf that only exists inside one becomes visible - that is the leaf
@@ -914,9 +922,9 @@ def _conjunctive_view(arm, expand=False):
 	if key == 'AND':
 		children = list(arm['val'])
 	elif key == 'NOR':
-		if any(c.get('type') != 'node' for c in arm['val']):
+		if any(c.get('type') not in ('node', 'comment') for c in arm['val']):
 			return None
-		children = _negated_conjuncts(arm)
+		children = [c if c.get('type') == 'comment' else _negated_node(c) for c in arm['val']]
 	else:
 		return None
 	if not expand:
@@ -1938,6 +1946,60 @@ def _if_implication_node(if_node, guaranteed_scopes=None):
 	return or_node
 
 
+def _trigger_if_else_or(if_node, else_node, guaranteed_scopes=None):
+	"""A trigger 'if = { limit = L  B } else = { C }' as 'OR = { AND = { L B } AND = { not L C } }'.
+
+	In a trigger list the pair picks a branch: 'L and B, or not L and C' - the same expression the
+	complementary-OR fold writes in the other direction, so the existing rules carry on from there
+	('story_events.txt' story.2, where an if/else an earlier build wrote folds to
+	'NOR = { G  AND = { S X } }'). This is the inverse of that fold, which is why it is only
+	worth building when the two branches share a condition: the hoist then factors it out and the
+	resolution rules reduce the rest. Without one the OR would be folded straight back into the
+	same if/else. A tooltip is refused as well - its display would move into a branch.
+	"""
+	if_children = if_node.get('val')
+	else_children = else_node.get('val')
+	if not isinstance(if_children, list) or not isinstance(else_children, list):
+		return None
+	if _contains_exception_key(if_children) or _contains_exception_key(else_children):
+		return None
+	limit_nodes, body_nodes = [], []
+	for child in if_children:
+		if child.get('type') == 'comment':
+			body_nodes.append(child) # a comment line keeps its place in the branch
+			continue
+		if child.get('key') == 'limit' and isinstance(child.get('val'), list):
+			if limit_nodes:
+				return None
+			for item in child['val']:
+				if item.get('type') != 'node':
+					return None
+				limit_nodes.append(item)
+			continue
+		body_nodes.append(child)
+	if not limit_nodes or not any(c.get('type') == 'node' for c in body_nodes):
+		return None
+	if not any(c.get('type') == 'node' for c in else_children):
+		return None
+	# 'not L', through the positive form when L already is a negation - never two stacked.
+	neg_limit = None
+	if len(limit_nodes) == 1 and _is_negation_node(limit_nodes[0]):
+		positive = [c for c in _get_positive_form(limit_nodes[0], guaranteed_scopes) if c.get('type') == 'node']
+		if len(positive) == 1:
+			neg_limit = positive[0]
+	if neg_limit is None:
+		neg_limit = {'key': 'NOT' if len(limit_nodes) == 1 else 'NAND', 'op': '=',
+			'val': list(limit_nodes), 'type': 'node'}
+	first_arm = {'key': 'AND', 'op': '=', 'type': 'node', 'val': limit_nodes + list(body_nodes)}
+	second_arm = {'key': 'AND', 'op': '=', 'type': 'node', 'val': [neg_limit] + list(else_children)}
+	# Whatever comment sat on either conditional stays on the arm it becomes.
+	_attach_comments(first_arm, if_node)
+	_attach_comments(second_arm, else_node)
+	if not _extract_common_and_children([first_arm, second_arm])[0]:
+		return None
+	return {'key': 'OR', 'op': '=', 'type': 'node', 'val': [first_arm, second_arm]}
+
+
 def _looks_like_trigger_node(node, depth=0):
 	"""Positive evidence that a node can only be trigger script.
 
@@ -2908,6 +2970,30 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					node_list[idx] = or_node
 					changed_any = True
 					print("Rewrote trigger if into OR implication", file=sys.stderr)
+					idx += 1
+					continue
+			# A trigger 'if' with an 'else' picks a branch - 'L and B, or not L and C'. Worth turning
+			# back into that OR when the branches share a condition, because the hoist then factors
+			# it out and the resolution rules finish the job ('story_events.txt' story.2: an if/else an
+			# earlier build wrote folds to 'NOR = { G  AND = { S X } }'). Without a shared condition
+			# the OR would be folded straight back, so the helper refuses it.
+			if has_else and scope_context != 'effect' and (trigger_container or _if_condition_guesses_trigger(node)):
+				else_node, else_index, between = None, None, False
+				for j in range(idx + 1, len(node_list)):
+					if node_list[j].get('type') == 'comment':
+						between = True
+						continue
+					if (not between and str(node_list[j].get('key', '')) == 'else'
+							and isinstance(node_list[j].get('val'), list)):
+						else_node, else_index = node_list[j], j
+					break
+				merged = (_trigger_if_else_or(node, else_node, guaranteed)
+					if else_node is not None else None)
+				if merged is not None:
+					node_list[idx] = merged
+					del node_list[else_index]
+					changed_any = True
+					print("Rewrote a trigger if/else into the OR it picks between", file=sys.stderr)
 					idx += 1
 					continue
 			# Rare: an 'if' with an empty body followed by an 'else' is 'L OR B' in trigger
