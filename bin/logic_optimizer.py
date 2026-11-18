@@ -1639,15 +1639,18 @@ def _or_negation_scope_fold(node):
 		return None
 	# One child is what the pair can be restated with: a negation cancels against the 'not' the
 	# fold introduces (the 'NOT = { X = { C } }' long form). A positive child has to be negated
-	# instead, which only pays off when the result still reads as a plain condition -
-	# 'num_ships = 0' becomes 'num_ships > 0' and the '?' block stays positive. When the negation
-	# is a 'NOT' wrapper or a '= no' leaf, the block would carry a double negation and read worse
-	# than the OR it came from ('if = { limit = { exists = X } X = { C } }' keeps its OR form),
-	# so that shape is left alone.
+	# instead. A 'NOT' wrapper is never worth it - the negation normalisation would push it into
+	# the content and change the shape again - so only a flip is taken ('num_ships = 0' ->
+	# 'num_ships > 0'). With safe navigation on, a flip to '= no' is refused as well: the '?'
+	# block would read 'NOT = { X? = { C = no } }', a double negation inside the block, where the
+	# OR it came from reads better ('if = { limit = { exists = X } X = { C = yes } }' keeps its OR).
+	# The guarded NAND has no such problem - 'NAND = { exists = X  X = { C = no } }' is its normal
+	# spelling - so the flip is taken there.
 	negated = None
 	if not _is_negation_node(block_children[0]):
 		negated = _negated_node(block_children[0])
-		if _is_negation_node(negated):
+		if (str(negated.get('key', '')) == 'NOT'
+				or (_ACTIVE_SAFE_NAV == 'fold' and _is_negation_node(negated))):
 			return None
 	return {
 		'scope': guard_name,
@@ -3672,7 +3675,7 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 	# that long form for 'NOT = { X = { C.. } }'. The OR node itself is rewritten (one
 	# node in, one node out), so its container is irrelevant: AND/OR/count semantics of
 	# the parent are untouched.
-	if _ACTIVE_SAFE_NAV == 'fold':
+	if _ACTIVE_SAFE_NAV in ('fold', 'revert', 'ignore'):
 		for node in node_list:
 			if node.get('type') != 'node' or str(node.get('key', '')) != 'OR':
 				continue
@@ -3682,6 +3685,16 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			scope_name = folded['scope']
 			block = folded['block']
 			inner = folded['inner']
+			if _ACTIVE_SAFE_NAV != 'fold' and _is_safe_nav_key(block.get('key')):
+				# A '?' block is safe navigation itself: 'revert' unfolds it on its own, and
+				# 'ignore' leaves it alone in both directions.
+				continue
+			if _ACTIVE_SAFE_NAV != 'fold' and not folded.get('negated'):
+				# Without safe navigation only the positive-block direction is folded. The other one -
+				# a block that already holds the negation - belongs to 'Extracted common scope root
+				# from NAND block', which turns the NAND straight back into this very OR
+				# (00_rules.txt, the 'overlord' pair), so folding it here would only burn a pass.
+				continue
 			# Comments can sit anywhere between the two children - keep every one of them.
 			moved_comments = [c for c in node.get('val', []) if c.get('type') == 'comment']
 			moved_comments += [c for c in folded['guard'].get('val', []) if c.get('type') == 'comment']
@@ -3703,14 +3716,21 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					node[meta] = node.get(meta, '') + folded['guard'][meta]
 				if meta in folded['exists']:
 					node[meta] = node.get(meta, '') + folded['exists'][meta]
-			block['key'] = scope_name + '?'
 			block['val'] = block_comments + list(content)
-			node['key'] = 'NOT'
 			node['op'] = '='
-			node['val'] = moved_comments + [block]
+			if _ACTIVE_SAFE_NAV == 'fold':
+				block['key'] = scope_name + '?'
+				node['key'] = 'NOT'
+				node['val'] = moved_comments + [block]
+				print(f"Folded OR negation into safe navigation: {scope_name}?", file=sys.stderr)
+			else:
+				# No safe navigation: the pair is the guarded NAND it started as - 'not(X exists and
+				# C..)' with the guard kept explicit, which is also what the NAND rule below keeps.
+				node['key'] = 'NAND'
+				node['val'] = [copy.deepcopy(folded['exists'])] + moved_comments + [block]
+				print(f"Folded OR negation into a guarded NAND: {scope_name}", file=sys.stderr)
 			node.pop('_fp', None)
 			changed_any = True
-			print(f"Folded OR negation into safe navigation: {scope_name}?", file=sys.stderr)
 
 	# --- SAFE NAVIGATION (?=) OPTIMIZATION ---
 	# Only collapse guard + scope pairs that are logically ANDed together: an implicit AND list,
@@ -4952,18 +4972,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 							expanded = True
 							key = 'NOT'
 							print("Folded a NAND of an existence guard into 'NOT = { X? = { ... } }'", file=sys.stderr)
-						else:
-							negated_block = copy.deepcopy(block)
-							if _negate_numerical_comparison_recursively(negated_block, guaranteed_scopes=guaranteed):
-								negated_guard = {'key': 'NOT', 'op': '=', 'val': [copy.deepcopy(guard)], 'type': 'node'}
-								node['key'] = 'OR'
-								node['op'] = '='
-								node['val'] = [negated_guard] + comments + [negated_block]
-								node.pop('_fp', None)
-								changed_any = True
-								expanded = True
-								key = 'OR'
-								print("Expanded a NAND of an existence guard into an OR", file=sys.stderr)
+						# Without safe navigation the pair has no shorter spelling that keeps the guard's
+						# negation, so the NAND stays exactly as it is - and the OR form of the same pair
+						# folds back into it (see '_or_negation_scope_fold').
 				if not expanded and len(children_nodes) == 1:
 					node['key'] = 'NOT'
 					changed_any = True
