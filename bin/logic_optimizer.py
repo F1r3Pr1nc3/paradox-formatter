@@ -1602,7 +1602,12 @@ def _or_negation_scope_fold(node):
 
 	That OR means 'not(exists X) OR (X exists AND not C..)', which is the same as
 	'not(X exists AND C..)' - so the pair collapses into one negated safe navigation
-	block, 'NOT = { X? = { C.. } }'. Returns the parts to rewrite or None.
+	block, 'NOT = { X? = { C.. } }'.
+
+	The same reading covers the other polarity, which is what 'safeNavigation: revert' writes for
+	that block: 'OR = { NOT = { exists = X }  X = { C.. } }' is 'not(exists X) OR (X exists AND C..)'
+	= 'not(X exists AND not C..)', so there the folded block holds the negation of C instead -
+	'negate' says which way round it is. Returns the parts to rewrite or None.
 	"""
 	if str(node.get('key', '')) != 'OR' or not isinstance(node.get('val'), list):
 		return None
@@ -1630,16 +1635,27 @@ def _or_negation_scope_fold(node):
 	if str(block.get('key', '')).rstrip('?').lower() != guard_name.lower():
 		return None
 	block_children = [c for c in block.get('val', []) if c.get('type') == 'node']
-	if len(block_children) != 1 or not _is_negation_node(block_children[0]):
-		# The block has to hold exactly one negation - only then is 'X exists AND block'
-		# the negation of 'X exists AND <positive form>'.
+	if len(block_children) != 1:
 		return None
+	# One child is what the pair can be restated with: a negation cancels against the 'not' the
+	# fold introduces (the 'NOT = { X = { C } }' long form). A positive child has to be negated
+	# instead, which only pays off when the result still reads as a plain condition -
+	# 'num_ships = 0' becomes 'num_ships > 0' and the '?' block stays positive. When the negation
+	# is a 'NOT' wrapper or a '= no' leaf, the block would carry a double negation and read worse
+	# than the OR it came from ('if = { limit = { exists = X } X = { C } }' keeps its OR form),
+	# so that shape is left alone.
+	negated = None
+	if not _is_negation_node(block_children[0]):
+		negated = _negated_node(block_children[0])
+		if _is_negation_node(negated):
+			return None
 	return {
 		'scope': guard_name,
 		'guard': guard_node,
 		'exists': exists_node,
 		'block': block,
 		'inner': block_children[0],
+		'negated': negated,
 	}
 
 
@@ -3672,8 +3688,11 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			block_comments = [c for c in block.get('val', []) if c.get('type') == 'comment']
 			# The block content becomes the positive form of its negation: a NOT simply
 			# loses its wrapper ('not(X exists and C..)'), 'NOR {C..}' becomes 'OR {C..}',
-			# 'leaf = no' becomes 'leaf = yes' - all the same expression.
-			content = _get_positive_form(inner, guaranteed)
+			# 'leaf = no' becomes 'leaf = yes' - all the same expression. A block that held the
+			# expression itself ('revert' writes 'X = { C.. }' for this pair) keeps it and gains
+			# the negation the fold needs.
+			content = ([folded['negated']] if folded.get('negated')
+				else _get_positive_form(inner, guaranteed))
 			if not content:
 				continue
 			for meta in ('_cm_inline', '_cm_open', '_cm_close'):
