@@ -3330,8 +3330,11 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				i += 1
 				continue
 			first = _conditional_limit_and_body(first_cond)
-			# A single condition means the negated case is the plain 'else' fold above.
-			if first is None or len(first['limit']) < 2:
+			# A single condition means the negated case is the plain 'else' fold above - but one NOR
+			# conjunct carries several negated conditions at once, which is what the always-on NOR
+			# merging leaves behind, and the chain can still be formed from it.
+			if first is None or (len(first['limit']) < 2
+					and not any(_is_open_nor(c) and len(c['val']) > 1 for c in first['limit'])):
 				i += 1
 				continue
 			# The next 'if', stepping over comment lines: the two branches swap in place, so
@@ -3363,7 +3366,32 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				if _limits_are_negations([cond], second['limit']):
 					negated_idx = idx
 					break
+			# The condition is often wrapped in a NOR by the time a file has been formatted once: the
+			# always-on NOR merging turns 'is_colony = no  is_star = no  NOT = { ... }' into
+			# 'NOR = { is_colony = yes  is_star = yes  ... }', and that NOR is one conjunct. Its
+			# children are the negated leaves, so the one that equals the second limit is the condition
+			# this reorder is after ('cosmic_storms_events_1.txt', cstorms.8500 - without this the chain
+			# could only be formed on a pristine file).
+			nor_idx, nor_leaf = -1, None
 			if negated_idx == -1:
+				for idx, cond in enumerate(first['limit']):
+					if not _is_open_nor(cond):
+						continue
+					# Dropping a leaf must not drop a comment, and the NOR may lose its last child as well -
+					# so a NOR with any comment on it or on one of its children is left alone
+					# ('caravaneer_scripted_effects.txt': 'has_country_flag = fleet2deal8 # Unique Planetary
+					# Deposit' inside the NOR).
+					if (any(cond.get(m) for m in ('_cm_open', '_cm_inline', '_cm_close', '_cm_preceding'))
+							or any(c.get(m) for c in cond['val']
+								for m in ('_cm_open', '_cm_inline', '_cm_close', '_cm_preceding'))):
+						continue
+					for leaf in cond['val']:
+						if nodes_are_equal(leaf, second['limit'][0]):
+							nor_idx, nor_leaf = idx, leaf
+							break
+					if nor_leaf is not None:
+						break
+			if negated_idx == -1 and nor_leaf is None:
 				i += 1
 				continue
 			# A following 'else_if'/'else' belongs to the second conditional and would be
@@ -3380,8 +3408,24 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 					for c in first['limit_node'].get('val', []) + second['limit_node'].get('val', [])):
 				i += 1
 				continue
-			negated_leaf = first['limit'][negated_idx]
-			first['limit_node']['val'] = [c for c in first['limit_node']['val'] if c is not negated_leaf]
+			if nor_leaf is not None:
+				nor_node = first['limit'][nor_idx]
+				remaining = [c for c in nor_node['val'] if c is not nor_leaf]
+				negated_leaf = nor_leaf
+				if not remaining:
+					# The NOR said nothing else: the whole conjunct goes.
+					first['limit_node']['val'] = [c for c in first['limit_node']['val'] if c is not nor_node]
+				elif len(remaining) == 1:
+					# 'NOR = { x }' is 'NOT = { x }', which is what is left of the conjunct.
+					nor_node['key'] = 'NOT'
+					nor_node['val'] = remaining
+					nor_node.pop('_fp', None)
+				else:
+					nor_node['val'] = remaining
+					nor_node.pop('_fp', None)
+			else:
+				negated_leaf = first['limit'][negated_idx]
+				first['limit_node']['val'] = [c for c in first['limit_node']['val'] if c is not negated_leaf]
 			first_cond['key'] = 'else_if'
 			first_cond.pop('_fp', None)
 			second_cond.pop('_fp', None)
