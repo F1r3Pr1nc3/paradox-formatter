@@ -278,6 +278,8 @@ The two limits cannot be merged here: the `else` covers "A is false", and a merg
 
 ## 🚀 Installation
 
+Requires **VS Code 1.86 or newer** - the format-on-paste switch uses the document paste API.
+
 ### Manual Installation (.vsix)
 
 You can install the packaged extension directly using the `.vsix` file.
