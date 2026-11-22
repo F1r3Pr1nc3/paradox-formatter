@@ -943,6 +943,43 @@ def _has_nested_nor(views):
 	return any(_is_open_nor(child) for view in views for child in view)
 
 
+def _without_conjunct(children, target):
+	"""'children' with 'target' taken out - from the list, or from a NOR that asserts it.
+
+	'target' is what the expanded reading of an arm showed: one of its own children, or the
+	negation of a child of a nested NOR ('NOR = { a b }' asserts 'not a and not b'). Removing it
+	from the NOR leaves the other negations; a single one of those is a plain 'NOT = { x }' and
+	none drops the conjunct altogether. Returns None when the target is nowhere in the list, so
+	the caller can skip that pair instead of duplicating the condition.
+	"""
+	out = []
+	removed = False
+	for child in children:
+		# Identity first, then equality: the target may come from an expanded reading, which
+		# builds a fresh node for every negated leaf, so 'child is target' rarely holds.
+		if not removed and (child is target or nodes_are_equal(child, target)):
+			removed = True
+			continue
+		if not removed and _is_open_nor(child):
+			for leaf in child['val']:
+				if not nodes_are_equal(_negated_node(leaf), target):
+					continue
+				remaining = [c for c in child['val'] if c is not leaf]
+				if remaining:
+					if len(remaining) == 1:
+						one = {'key': 'NOT', 'op': '=', 'val': remaining, 'type': 'node'}
+						_attach_comments(one, child)
+						out.append(one)
+					else:
+						out.append(dict(child, val=remaining))
+				removed = True
+				break
+			if removed:
+				continue
+		out.append(child)
+	return out if removed else None
+
+
 def _conjunctive_block(arm, view):
 	"""The block '_extract_common_and_children' factors: the arm itself while the view is its own
 	children (its brace and trailing comments survive), a stand-in carrying them otherwise."""
@@ -2262,11 +2299,18 @@ def _or_to_if_else(or_node):
 	# A branch the NOR merging re-spelled ('NOR = { not-a b }' for 'AND = { a NOT = { b } }') is
 	# read as the conjunction it is, so a file that was formatted once still folds on the next
 	# run ('infernals_1_events.txt' infernals.25).
-	view1, view2 = _conjunctive_view(and1), _conjunctive_view(and2)
-	if view1 is None or view2 is None:
+	shallow1, shallow2 = _conjunctive_view(and1), _conjunctive_view(and2)
+	if shallow1 is None or shallow2 is None:
 		return None
-	if any(or_node.get(m) for m in ('_cm_open', '_cm_inline', '_cm_close')):
-		return None
+	# The pair can also hide behind a NOR one level down: one branch says 'is_colony = no', the
+	# other holds a NOR with 'is_colony = yes' in it. The pair is looked for in that expanded
+	# reading - what lets a file that has been formatted once still fold
+	# ('on_action_events_2.txt', action.110) - but the branches are rebuilt from their own children
+	# ('_without_conjunct'), so nothing is un-NORed unless the consumed condition sits inside one.
+	search1, search2 = shallow1, shallow2
+	if _has_nested_nor([shallow1, shallow2]):
+		search1 = _conjunctive_view(and1, expand=True) or shallow1
+		search2 = _conjunctive_view(and2, expand=True) or shallow2
 	# Comment lines between the branches belong to the branch they sit in front of and move onto
 	# the 'if'/'else' it becomes; a comment inside a branch body travels with that body. The only
 	# comment that needs moving by hand is the one on the condition that gets consumed below.
@@ -2280,54 +2324,53 @@ def _or_to_if_else(or_node):
 		pending = []
 	# Branches that still share a condition are hoisted apart first (that is what the caller does
 	# for a conjunctive list); folding them here would repeat the shared condition in both bodies.
-	if _extract_common_and_children([_conjunctive_block(and1, view1),
-			_conjunctive_block(and2, view2)])[0]:
+	if _extract_common_and_children([_conjunctive_block(and1, search1),
+			_conjunctive_block(and2, search2)])[0]:
 		return None
-	# The same goes for a leaf one arm only shares through a nested NOR: hoisting it out gives the
-	# shorter 'NOR = { L AND = { ... } }' ('story_events.txt' story.2), which the fold below would
-	# otherwise pre-empt by repeating the leaf in both bodies.
-	if _has_nested_nor([view1, view2]):
-		expanded1 = _conjunctive_view(and1, expand=True)
-		expanded2 = _conjunctive_view(and2, expand=True)
-		if expanded1 is not None and expanded2 is not None and _extract_common_and_children(
-				[_conjunctive_block(and1, expanded1),
-					_conjunctive_block(and2, expanded2)])[0]:
-			return None
-	for pos, neg, pos_view, neg_view in ((and1, and2, view1, view2), (and2, and1, view2, view1)):
-		for a in pos_view:
+	for pos, neg, pos_view, neg_view, pos_search, neg_search in (
+			(and1, and2, shallow1, shallow2, search1, search2),
+			(and2, and1, shallow2, shallow1, search2, search1)):
+		for a in pos_search:
 			if a.get('type') != 'node' or _is_negation_node(a):
 				continue
-			for na in neg_view:
+			for na in neg_search:
 				if na.get('type') != 'node' or not _is_negation_node(na):
 					continue
-				if _limits_are_negations([a], [na]):
-					body_pos = [c for c in pos_view if c is not a]
-					body_neg = [c for c in neg_view if c is not na]
-					# 'na' is consumed by the implicit negation of the limit, so its own comments
-					# have to move onto the else body - the branch it decides.
-					consumed_comments = []
-					if isinstance(na.get('val'), list):
-						consumed_comments = [c for c in na['val'] if c.get('type') == 'comment']
-					if_node = {'key': 'if', 'op': '=', 'val': [{'key': 'limit', 'op': '=', 'val': [a], 'type': 'node'}] + body_pos, 'type': 'node'}
-					else_node = {'key': 'else', 'op': '=', 'val': consumed_comments + body_neg, 'type': 'node'}
-					# A comment written on the branch brace ('AND = { # why ...') describes that
-					# branch, so it moves onto the 'if'/'else' the branch becomes instead of going
-					# missing (00_rules.txt, can_access_decisions).
-					_carry_branch_comments(if_node, pos)
-					_carry_branch_comments(else_node, neg)
-					_carry_branch_comments(else_node, na)
-					# Same for the comment lines in front of a branch.
-					if branch_leading.get(id(pos)):
-						if_node['val'] = branch_leading[id(pos)] + if_node['val']
-					if branch_leading.get(id(neg)):
-						else_node['val'] = branch_leading[id(neg)] + else_node['val']
-					# An 'else' that ends up holding nothing says nothing: '(A and B) or (not A)'
-					# is 'A implies B', and the emptied branch is exactly the case the arm
-					# splicing produces ('AND = { not A }' loses its own negation). Written out,
-					# it is a dead block that also has to be carried through every later pass.
-					if not else_node['val']:
-						return {'if': if_node}
-					return {'if': if_node, 'else': else_node}
+				if not _limits_are_negations([a], [na]):
+					continue
+				# Both branches are rebuilt from their own children: the condition that was consumed
+				# leaves the list, or the NOR that asserted it.
+				body_pos = _without_conjunct(pos_view, a)
+				body_neg = _without_conjunct(neg_view, na)
+				if body_pos is None or body_neg is None:
+					continue
+				# 'na' is consumed by the implicit negation of the limit, so its own comments
+				# have to move onto the else body - the branch it decides.
+				consumed_comments = []
+				if isinstance(na.get('val'), list):
+					consumed_comments = [c for c in na['val'] if c.get('type') == 'comment']
+				if_node = {'key': 'if', 'op': '=', 'val': [{'key': 'limit', 'op': '=', 'val': [a], 'type': 'node'}] + body_pos, 'type': 'node'}
+				# A comment on the OR itself describes the whole statement, so it moves onto the 'if'.
+				_attach_comments(if_node, or_node)
+				else_node = {'key': 'else', 'op': '=', 'val': consumed_comments + body_neg, 'type': 'node'}
+				# A comment written on the branch brace ('AND = { # why ...') describes that
+				# branch, so it moves onto the 'if'/'else' the branch becomes instead of going
+				# missing (00_rules.txt, can_access_decisions).
+				_carry_branch_comments(if_node, pos)
+				_carry_branch_comments(else_node, neg)
+				_carry_branch_comments(else_node, na)
+				# Same for the comment lines in front of a branch.
+				if branch_leading.get(id(pos)):
+					if_node['val'] = branch_leading[id(pos)] + if_node['val']
+				if branch_leading.get(id(neg)):
+					else_node['val'] = branch_leading[id(neg)] + else_node['val']
+				# An 'else' that ends up holding nothing says nothing: '(A and B) or (not A)'
+				# is 'A implies B', and the emptied branch is exactly the case the arm
+				# splicing produces ('AND = { not A }' loses its own negation). Written out,
+				# it is a dead block that also has to be carried through every later pass.
+				if not else_node['val']:
+					return {'if': if_node}
+				return {'if': if_node, 'else': else_node}
 	return None
 
 
@@ -3402,15 +3445,9 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 			if _has_following_else(node_list, j):
 				i += 1
 				continue
-			# The limit loses a condition, so nothing there may carry a comment.
-			if any(n.get(meta) for n in (first['limit_node'], second['limit_node'], first_cond, second_cond)
-					for meta in ('_cm_open', '_cm_inline', '_cm_close')):
-				i += 1
-				continue
-			if any(c.get('type') == 'comment'
-					for c in first['limit_node'].get('val', []) + second['limit_node'].get('val', [])):
-				i += 1
-				continue
+			# Comments do not stop the reorder: both conditionals and both limits are kept (only the
+			# dropped condition leaves its list), so a comment on a brace or on another condition stays
+			# where it is. Only a comment written on the condition that goes would go with it.
 			if nor_leaf is not None:
 				nor_node = first['limit'][nor_idx]
 				remaining = [c for c in nor_node['val'] if c is not nor_leaf]
