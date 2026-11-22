@@ -1102,7 +1102,12 @@ def lowercase_keys(node_list):
 			is_block = isinstance(node.get('val'), list)
 			if 'key' in node:
 				original_key = node['key']
-				if original_key in KEYWORDS_TO_LOWER or original_key.endswith(KEYWORDS_TO_LOWER_END) or original_key.startswith(KEYWORDS_TO_LOWER_START) or (is_block and original_key in KEYWORDS_TO_LOWER_LIST):
+				# A safe-navigation guard names the same scope: 'ROOT? = { .. }' has to be seen as
+				# 'ROOT', or the revert rule spells the guard back as 'exists = ROOT' +
+				# 'ROOT = { .. }' and only the *next* run lowercased that ('00_rules.txt' in
+				# 'revert' mode, which is why the file was never a fixpoint there).
+				probe = original_key[:-1] if original_key.endswith('?') else original_key
+				if probe in KEYWORDS_TO_LOWER or probe.endswith(KEYWORDS_TO_LOWER_END) or probe.startswith(KEYWORDS_TO_LOWER_START) or (is_block and probe in KEYWORDS_TO_LOWER_LIST):
 					lower_key = original_key.lower()
 					if original_key != lower_key:
 						node['key'] = lower_key
@@ -2769,7 +2774,16 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				new_nor_node = {'key': 'NOR', 'op': '=', 'val': new_nor_children, 'type': 'node'}
 				new_node_list.append(new_nor_node)
 				changed_any = True
-				i = idx2 + 1
+				# Rescan from the start: the NOR that was just built is now the neighbour of the
+				# comparison written before the one this case matched, and that one belongs inside
+				# too (a run of comparisons in front of a NOR is one conjunction). Walking on from
+				# 'idx2' merged exactly one leaf per pass, so 'origin_events_cosmic_storms.txt' -
+				# eight 'resource_stockpile_compare' leaves in front of the NOR an 'if' fold left
+				# behind - needed a second save before it stopped changing. Each rescan drops one
+				# node, so this terminates.
+				node_list = new_node_list + node_list[idx2 + 1:] # 'idx2' is the NOR itself
+				new_node_list = []
+				i = 0
 				continue
 
 		new_node_list.append(node_list[i])
@@ -5527,6 +5541,15 @@ def should_be_compact(node):
 	logic_children = [c for c in children if c['type'] == 'node']
 	children_len = len(logic_children)
 	if children_len > 1 and key in normal_nodes: return False
+	# A trailing comment is written after the block's own closing brace, and it only stays
+	# there if that brace is the first one on its line. A compact body puts the closing brace
+	# of every block child in front of it, and reading that line back hands the comment to
+	# that child instead - 'owner = { a  b = { x } } # why' came back as 'b' carrying the
+	# comment, which then blocked compacting and spread the block out on the next run
+	# (biogenesis_events.txt). Such a block keeps its layout.
+	if node.get('_cm_close') and any(isinstance(child.get('val'), list) for child in children
+			if child['type'] == 'node'):
+		return False
 	if children_len > 2 and not key.endswith(compact_nodes): return False
 	# Ignore detailed child check
 	if (children_len == 1 and
@@ -5656,6 +5679,11 @@ def node_to_string(node, depth=0, be_compact=False):
 
 	key = node.get('key')
 	op = node.get('op', '=')
+	# 'rgb { 142 188 241 }' / 'hsv { .. }' are keyed blocks *without* an operator, so 'op' is
+	# None. Writing it out spelled 'rgb None {' - Python's None, which is not script at all
+	# (common/colors/00_colors.txt and every 'rgb' block it touched): the misplaced 'None'
+	# then read back as a value and a block, so the file could never settle.
+	op_str = f" {op}" if op else ""
 
 	# 2. Block
 	if isinstance(node.get('val'), list):
@@ -5704,11 +5732,11 @@ def node_to_string(node, depth=0, be_compact=False):
 				joined_children = " ".join(child_strs)
 				val_key_str = f"{val_key} " if val_key else ""
 				inner = (" " + joined_children) if joined_children else ""
-				return f"{indent}{key} {op} {val_key_str}{{{inner} }}{cm_close}"
+				return f"{indent}{key}{op_str} {val_key_str}{{{inner} }}{cm_close}"
 
 		# Not compact
 		val_key_str = f"{val_key} " if val_key else ""
-		lines = [f"{indent}{key} {op} {val_key_str}{{{cm_open}"]
+		lines = [f"{indent}{key}{op_str} {val_key_str}{{{cm_open}"]
 		prev_was_header = False
 		prev_was_comment = False
 		prev_is_block = False
@@ -5846,7 +5874,7 @@ def block_to_string(block_list):
 				is_block = True
 
 		if (
-			(not is_comment_node and not is_var and
+			(not is_comment_node and not is_var and i and
 			(not prev_was_comment or prev_was_header)) or
 			(comment_is_header and not prev_was_comment and i) or
 			(is_comment_node and prev_is_block)
@@ -5861,7 +5889,13 @@ def block_to_string(block_list):
 
 		cm_open = node.get('_cm_open')
 		node_to_print = node
-		if node['type'] == 'node' and is_block and cm_open:
+		if cm_open and node['type'] != 'node':
+			# A raw block is printed from its captured text, which the renderer emits as-is
+			# (it never spells that opening brace itself), so a comment written after that brace
+			# has to go above the node or it is lost. A parsed block keeps it on the brace line,
+			# exactly as node_to_string does one level down: moving it above the node turned it
+			# into a stand-alone comment on the next parse, and the blank line in front of it then
+			# disappeared (origin_events_3.txt 'country_event = { # Tombola, fired every year').
 			lines.append(cm_open.strip())
 			node_to_print = node.copy() # Shallow copy is enough
 			del node_to_print['_cm_open']

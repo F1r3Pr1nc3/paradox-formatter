@@ -38,6 +38,14 @@ This project is a VS Code extension (`f1r3pr1nc3.paradox-formatter`) that provid
   (`_without_conjunct`) instead of rebuilding a branch from an expanded reading - the expanded
   bodies un-NOR a file and cost a second pass.
 
+- **The output has to survive a second run.** A rule, or a layout decision, that only holds for
+  the pristine text stops holding the moment the file has been saved once - the user sees the file
+  change again on the next save. Two shapes of this are worth knowing: a rewrite that leaves work
+  for the next pass (the settle loop is three passes deep, so a rule that can hand itself work
+  should do all of it in one call), and a layout that reads back differently (a comment moved
+  above a node comes back as a comment *node*, and a compact line hands its closing comment to the
+  first brace on that line). 'test/logic_optimizer_cases.test.py' asserts a fixpoint for every file
+  in test/ - keep that green instead of eyeballing diffs.
 ## Known State & Recent Fixes
 - The `logic_optimizer.py` horizontal merging step was updated to prevent merging structural block keywords (like `limit`, `trigger`) into `NOR` logic gates during numerical/boolean negation routines.
 - The `logic_optimizer.py` was updated to replace regex-based logic with a proper parser to handle `factor=0` modifiers and nested blocks without corrupting the file structure (preventing unbalanced braces).
@@ -66,6 +74,38 @@ This project is a VS Code extension (`f1r3pr1nc3.paradox-formatter`) that provid
 - The `if`/`if` -> `if`/`else_if` reorder finds its leaf inside a `NOR` as well, which is what an already formatted file needs: the always-on NOR merging turns the first limit's negated conditions into one `NOR = { is_colony = yes  is_star = yes  ... }`, so the `is_colony = no` the second `if` negates no longer exists at the top of the limit. The rule now reads the NOR's children (one of them equals the second limit, so the NOR asserts its negation) and drops that child from the NOR - leaving the rest, or a `NOT = { ... }` when one child remains, or dropping the conjunct when none does - instead of the whole leaf. The single-condition guard counts a NOR conjunct as several conditions for that case. Without this the chain could only be formed on a pristine file (`cosmic_storms_events_1.txt` cstorms.8500, where the extension's default 'conversions off' pass NOR-izes the limit first and the chain never came back). A comment stops the reorder only when it sits on the leaf being dropped, which would take it along (`caravaneer_scripted_effects.txt`: 'has_country_flag = fleet2deal8 # Unique Planetary Deposit'); a comment on the NOR's brace or on another child stays with the block that survives, and the reorder goes ahead. Vanilla 4.4: 3 files change, all pure reorders - `anomaly_events_3.txt`, `crisis_events_3.txt` (the media_coverage and is_hive_empire chains) and `nomads_effects.txt` (a two-leaf NOR reduced to `NOT = { is_planet_class = pc_shattered }`), each fixpoint with the line multiset unchanged apart from `if` -> `else_if`.
 - Two blanket comment guards are gone, per the design rules above: the OR -> if/else fold no longer refuses when the OR itself carries a comment (it moves onto the `if` with `_attach_comments`), and the if/if reorder no longer refuses over comments in either limit - both conditionals and both limits are kept, so a comment on a brace or on another condition stays where it is, and only a comment on the condition that is dropped stops the reorder.
 - The OR -> if/else fold looks for its complementary pair in the *expanded* reading of both arms (`_conjunctive_view(..., expand=True)`), because the always-on NOR merging hides it one level down: `on_action_events_2.txt` action.110 is `AND = { M  from = { NOR = { M  N } } }` against `AND = { NOR = { N  M }  from = { M } }` once a file has been formatted, and the pair (M, not M) only exists inside those NORs - so the trigger kept an OR that folds from the pristine text. The branches are rebuilt from their own children through `_without_conjunct`, which takes the consumed condition out of the list *or* out of the NOR that asserted it (matching by identity **and** equality, since an expanded reading builds fresh nodes - identity alone silently matched nothing and the fold quietly stopped happening in 01_anomaly_categories.txt), so nothing is un-NORed unless the consumed condition sat inside one. Building the bodies from the expanded reading was the first attempt and is wrong: it un-NORed origin_events_3.txt's if/else into three loose NOTs and left the file a non-fixpoint. Vanilla 4.4: one file changes, 09_scripted_triggers_nomads.txt, where `OR = { AND = { OR{t1,t2}  NOR{sacred,heirs,cruise} }  AND = { cruise  planetfall } }` becomes `if = { limit = { cruise } planetfall } else = { OR{t1,t2}  NOR{sacred,heirs} }` - equivalent and a fixpoint.
+- A top-level block keeps a comment written after its opening brace on that brace
+  ('country_event = { # Tombola, fired every year'), the way every nested block always did
+  (`block_to_string`). It used to be printed above the event, so the next run read it back as a
+  stand-alone comment line and the blank line that separated the header block from the event fell
+  away - `origin_events_3.txt` changed on every second pass. Only a `raw_block` still gets its
+  comment above the node: it is printed from captured text and never spells its own brace.
+- The blank line in front of a top-level statement separates it from the statement above it, so
+  the first item of a file - no header comment, no '@variable' in front of it - does not get one
+  (the `i and` in `block_to_string`); a file that opens with a block came out with an empty first
+  line whenever anything else changed.
+- A block with a comment on its own closing brace and a *block* child is not compacted
+  (`should_be_compact`): the compact body would put that child's closing brace in front of the
+  comment on the same line, and reading the line back hands the comment to the child - which then
+  carried a comment itself, refused to compact, and spread the block out on the next run
+  (`biogenesis_events.txt`). The comment stays on the brace it was written after, in one run.
+- The NOT/comparison merge that builds a NOR absorbs the whole run of comparisons in front of
+  it, in one call (`optimize_node_list`, the `(comparison) then (NOT/NOR)` case): 'p1  p2  p3
+  NOR { X }' is one conjunction, so every comparison belongs inside as its negation. It used to
+  merge exactly the one comparison it was looking at and walk on, so a NOR an 'if' fold left
+  behind pulled in one leaf per pass and the settle loop (three passes) stopped short -
+  'origin_events_cosmic_storms.txt' has eight 'resource_stockpile_compare' leaves in front of
+  that NOR and was still moving on the next run. The rescan drops one node each time, so it
+  terminates; the leaf order is the source order.
+- `lowercase_keys` sees through a safe-navigation guard: 'ROOT? = { .. }' names the same scope as
+  'ROOT', and the guard suffix kept it out of `KEYWORDS_TO_LOWER`. The revert rule then spelled
+  it back as 'exists = ROOT' + 'ROOT = { .. }', and only the *next* run lowercased that -
+  '00_rules.txt' was not a fixpoint in `revert` mode.
+- An operator-less block is printed without an operator (`op_str` in `node_to_string`): 'rgb {
+  142 188 241 }' and 'hsv { .. }' have no '=', and writing `op` out unconditionally put Python's
+  None into the script - 'rgb None {', which is not script, read back as a stray value plus a
+  second block and damaged every colour in common/colors/00_colors.txt. 'trait_bg_active_glow {',
+  in common/named_colors/01_trait_colors.txt, is the same shape.
 - Factoring is followed by the reduction the tool already had, but the two were racing: `_or_to_if_else` needs the OR's arms to both be `AND` blocks, and an arm the factoring empties keeps its wrapper (`AND = { NOT S }`), so the if/else fold claimed `OR = { AND = { NOT S } AND = { S NOT C } }` before the resolution rule (line 4836) and the `NAND` folds could see it. `_splice_single_item_arms` now runs first in the OR pass - the "single item" rule factored out of the per-node walk into `_split_single_item_logic`, used by both - so the emptied arm is a bare `NOT = { S }`, `_or_to_if_else` no longer matches, and the `OR` reduces to `NAND = { S C }` (`T AND (NOT S OR NOT C)`, the shape `crisis_events_3.txt` line 599 wants). An `else` the fold would leave empty is dropped instead of written (`if L { B } else { }` is just `L implies B`), and the `OR-NOT -> NAND` fold keeps the OR's own comment children - it rebuilt `val` from the negations alone and silently dropped `# Synthetically Ascended Empires` - while refusing a shape that holds a `raw_block`, which is script and not a negation. Whole-corpus effect: 2 of 2181 vanilla files change, both equivalent and fixpoints (`crisis_events_3.txt`, and `00_scripted_triggers.txt` where the OR now comes out flat instead of as an `if` with a comment-only `else`).
 
 

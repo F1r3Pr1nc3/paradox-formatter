@@ -33,6 +33,10 @@ NOR = {
 Unlike other formatters that delete code context, this formatter treats your code as **text**, preserving crucial elements:
 
   * **Preserves Comments:** `# Comments` are protected and restored exactly where they were.
+    A comment on a block's opening brace stays on that brace (`country_event = { # why`), one on
+    its closing brace stays there (such a block is kept multi-line, so the comment cannot slide
+    onto a nested block), and a rule that moves a block carries its comments along. That is what
+    makes the formatter idempotent: running it on its own output changes nothing.
   * **Preserves Strings:** Strings like `name = "don't split { here }"` are safe from accidental formatting.
   * **Re-indents raw blocks:** the contents of `switch`/`inverted_switch` blocks are script, so they are re-indented line by line - a body line left at column 0 (or indented with spaces) no longer stays collapsed through every run. Template-style blocks (`resource_terms`, `in_breach_of`, `discrete_terms`) are still kept verbatim, because their leading whitespace can be meaningful.
 
