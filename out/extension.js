@@ -150,9 +150,9 @@ class ParadoxDocumentFormatter {
 		this.lastPaste = null;
 	}
 
-	// 'paradox-formatter.formatOnPaste' - the extension's own switch. Off, a paste is never
-	// formatted, whatever the editor's settings say; on, it is formatted even when the editor's
-	// 'editor.formatOnPaste' is off.
+	// 'paradox-formatter.formatOnPaste' - the extension's own switch. Off, a paste is not formatted,
+	// whatever the editor's settings say; on, it is - even when the editor's 'editor.formatOnPaste'
+	// is off. (A multi-cursor paste is the one exception: see provideDocumentPasteEdits.)
 	wantsPasteFormatting() {
 		return vscode.workspace.getConfiguration('paradox-formatter').get('formatOnPaste') === true;
 	}
@@ -581,7 +581,7 @@ class ParadoxDocumentFormatter {
 	// 'Format Selection', so this provider is the signal: it runs for every paste in the language,
 	// notes the pasted lines, and - when 'paradox-formatter.formatOnPaste' is on - returns the
 	// formatted text as the paste edit. With the switch off it returns no edit, and the note it
-	// took suppresses the editor's own paste formatting (see isPasteFormatRequest).
+	// took suppresses the editor's own paste formatting (see takePasteFormatRequest).
 	async provideDocumentPasteEdits(document, ranges) {
 		try {
 			if (!document || !document.uri || !Array.isArray(ranges) || !ranges.length) {
