@@ -18,7 +18,7 @@
         "url": "https://github.com/F1r3Pr1nc3/paradox-formatter"
     },
     "engines": {
-        "vscode": "^1.75.0"
+        "vscode": "^1.86.0"
     },
     "categories": [
         "Formatters"
@@ -45,6 +45,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "Disable compacting of short blocks (e.g. { a = b })."
+                },
+                "paradox-formatter.formatOnPaste": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Format the pasted lines. This is the extension's own switch, not the editor's: on, a paste is formatted even when 'editor.formatOnPaste' is off; off, a paste is left exactly as pasted even when 'editor.formatOnPaste' is on. Multi-cursor pastes still follow 'editor.formatOnPaste'. Needs VS Code 1.86 or newer - an older build has no paste API, so only 'editor.formatOnPaste' applies there."
                 },
                 "paradox-formatter.safeNavigation": {
                     "type": "string",

@@ -142,6 +142,69 @@ function formatWithPythonBridge(text, forceCompact, sourceName) {
 
 class ParadoxDocumentFormatter {
 
+	constructor() {
+		// The paste that was just handled (or deliberately left alone), so the range request the
+		// editor fires right after it - its own 'format on paste' - is answered here instead of
+		// formatting the same lines a second time, or formatting them at all while this
+		// extension's 'paradox-formatter.formatOnPaste' is off.
+		this.lastPaste = null;
+	}
+
+	// 'paradox-formatter.formatOnPaste' - the extension's own switch. Off, a paste is never
+	// formatted, whatever the editor's settings say; on, it is formatted even when the editor's
+	// 'editor.formatOnPaste' is off.
+	wantsPasteFormatting() {
+		return vscode.workspace.getConfiguration('paradox-formatter').get('formatOnPaste') === true;
+	}
+
+	// The editor's own switch. It can be set per language, so ask with the document at hand.
+	editorFormatsPaste(document) {
+		try {
+			const scope = document && document.uri ? document.uri : undefined;
+			return vscode.workspace.getConfiguration('editor', scope).get('formatOnPaste') === true;
+		} catch (err) {
+			return false;
+		}
+	}
+
+	// Remember a paste so the range request that follows it is answered from here instead.
+	// 'formatted' says whether this extension already formatted it (then the editor must not format
+	// it again) or left it alone (then the editor must not format it either, while the switch is
+	// off).
+	notePaste(document, ranges, formatted) {
+		let endLine = ranges[0].end.line;
+		for (const range of ranges) {
+			if (range.end.line > endLine) {
+				endLine = range.end.line;
+			}
+		}
+		this.lastPaste = {
+			uri: document.uri.toString(),
+			startLine: ranges[0].start.line,
+			endLine: endLine,
+			time: Date.now(),
+			formatted: !!formatted,
+		};
+	}
+
+	// The paste this range request is the editor's format-on-paste for, if it is one. Answers once,
+	// so 'Format Selection' on those lines keeps working right after a paste.
+	takePasteFormatRequest(document, range) {
+		const paste = this.lastPaste;
+		if (!paste || !document || !document.uri || document.uri.toString() !== paste.uri) {
+			return null;
+		}
+		if (Date.now() - paste.time > 3000) {
+			this.lastPaste = null;
+			return null;
+		}
+		if (range.end.line < paste.startLine || range.start.line > paste.endLine) {
+			return null;
+		}
+		this.lastPaste = null;
+		return paste;
+	}
+
 	// 1. Tokenizer: Protects strings and comments to prevent formatting them
 	protectContent(text, placeholderMap) {
 		let counter = 0;
@@ -372,6 +435,31 @@ class ParadoxDocumentFormatter {
 	// blank lines are put back in front of the lines that survived unchanged.
 	// Returns null when the wrapper did not survive (selections that cut through a block and
 	// the like), so the caller can fall back to the built-in re-indenter.
+	// The formatted form of 'fragment' (the text of 'range'), or null when the tool's wrapper did
+	// not survive the round trip. Both the range provider and the paste provider go through here,
+	// so a paste and a selection are formatted by exactly the same code.
+	async formattedFragmentText(document, range, fragment, options) {
+		if (!this.isBalancedFragment(fragment)) {
+			// The fragment cuts through a block: wrapping it would let the parser's brace
+			// recovery eat its own closing braces, so leave it to the built-in re-indenter.
+			return null;
+		}
+		const baseLevel = this.baseIndentLevel(document, range, options);
+		const wrapperKey = '__pdx_selection__';
+		const wrapped = wrapperKey + ' = {\n' + fragment + '\n}\n';
+
+		// Try with the user's compacting setting first; when a small fragment comes back on
+		// one line the wrapper is gone, so retry with --no-compact before giving up.
+		for (const forceCompact of [undefined, false]) {
+			const answer = await formatWithPythonBridge(wrapped, forceCompact);
+			const body = this.unwrapSelectionFragment(answer.content, wrapperKey);
+			if (body) {
+				return this.reindentSelection(body, fragment, baseLevel, options);
+			}
+		}
+		return null;
+	}
+
 	async formatRangeWithPython(document, range, options) {
 		const start = new vscode.Position(range.start.line, 0);
 		const endLine = document.lineAt(range.end.line);
@@ -379,25 +467,11 @@ class ParadoxDocumentFormatter {
 		const extendedRange = new vscode.Range(start, end);
 
 		const fragment = document.getText(extendedRange);
-		if (!this.isBalancedFragment(fragment)) {
-			// The selection cuts through a block: wrapping it would let the parser's brace
-			// recovery eat the selection's own closing braces, so leave it to the re-indenter.
+		const formatted = await this.formattedFragmentText(document, extendedRange, fragment, options);
+		if (formatted === null) {
 			return null;
 		}
-		const baseLevel = this.baseIndentLevel(document, range, options);
-		const wrapperKey = '__pdx_selection__';
-		const wrapped = wrapperKey + ' = {\n' + fragment + '\n}\n';
-
-		// Try with the user's compacting setting first; when a small selection comes back on
-		// one line the wrapper is gone, so retry with --no-compact before giving up.
-		for (const forceCompact of [undefined, false]) {
-			const answer = await formatWithPythonBridge(wrapped, forceCompact);
-			const body = this.unwrapSelectionFragment(answer.content, wrapperKey);
-			if (body) {
-				return [vscode.TextEdit.replace(extendedRange, this.reindentSelection(body, fragment, baseLevel, options))];
-			}
-		}
-		return null;
+		return [vscode.TextEdit.replace(extendedRange, formatted)];
 	}
 
 	// Strip the throwaway wrapper from the tool's answer; null when it is not intact.
@@ -484,6 +558,14 @@ class ParadoxDocumentFormatter {
 	// Selections go through the Python tool as well, so the same conversions run; the
 	// built-in re-indenter stays as the fallback for anything the tool cannot handle.
 	async provideDocumentRangeFormattingEdits(document, range, options) {
+		// A paste is answered by the paste provider below, which is the only place that knows a
+		// paste from a selection: the editor's own format-on-paste must not format the same lines
+		// again after that provider did, and must not format them at all while this extension's
+		// 'paradox-formatter.formatOnPaste' is off.
+		const paste = this.takePasteFormatRequest(document, range);
+		if (paste && (paste.formatted || !this.wantsPasteFormatting())) {
+			return [];
+		}
 		try {
 			const converted = await this.formatRangeWithPython(document, range, options);
 			if (converted) {
@@ -493,6 +575,48 @@ class ParadoxDocumentFormatter {
 			console.error('Selection formatting through the Python formatter failed, falling back to the built-in re-indenter:', err);
 		}
 		return this.formatRange(document, range, options);
+	}
+
+	// 'Format on paste', owned by the extension. The range provider cannot tell a paste from
+	// 'Format Selection', so this provider is the signal: it runs for every paste in the language,
+	// notes the pasted lines, and - when 'paradox-formatter.formatOnPaste' is on - returns the
+	// formatted text as the paste edit. With the switch off it returns no edit, and the note it
+	// took suppresses the editor's own paste formatting (see isPasteFormatRequest).
+	async provideDocumentPasteEdits(document, ranges) {
+		try {
+			if (!document || !document.uri || !Array.isArray(ranges) || !ranges.length) {
+				return undefined;
+			}
+			const wantsFormatting = this.wantsPasteFormatting();
+			// Several cursors put the same text at several places, each at its own indentation, and
+			// one paste edit cannot carry that: those stay with the editor's own path (formatted by
+			// it when the switch is on, left alone when it is off).
+			if (!wantsFormatting || ranges.length !== 1) {
+				if (this.editorFormatsPaste(document)) {
+					this.notePaste(document, ranges, false);
+				}
+				return undefined;
+			}
+			const range = ranges[0];
+			const fragment = document.getText(range);
+			if (!fragment || !fragment.trim()) {
+				return undefined;
+			}
+			const formatted = await this.formattedFragmentText(document, range, fragment,
+				this.effectiveIndentOptions(undefined));
+			if (formatted === null || formatted === fragment) {
+				// Nothing to say about this text (or no wrapper survived): keep the plain paste.
+				return undefined;
+			}
+			// Noted after the fact: the editor may still ask for its own paste formatting behind
+			// this edit, and it must not run a second time on the same lines.
+			this.notePaste(document, [range], true);
+			return [new vscode.DocumentPasteEdit(formatted, 'Format pasted Paradox script',
+				vscode.DocumentDropOrPasteEditKind.Text)];
+		} catch (err) {
+			console.error('Formatting the pasted text failed, keeping the paste as it is:', err);
+			return undefined;
+		}
 	}
 }
 
@@ -566,4 +690,19 @@ function activate(ctx) {
 		vscode.languages.registerDocumentRangeFormattingEditProvider(selector, formatter),
 		formatAllCommand
 	);
+
+	// The paste API arrived in VS Code 1.86; on an older build this extension simply does not
+	// register a paste provider and 'editor.formatOnPaste' stays in charge, as it was before.
+	// Without the provider there is no way to tell a paste from 'Format Selection', so the switch
+	// would have nothing to act on - rather than show a checkbox that does nothing, leave the
+	// editor's own setting to it.
+	const pasteKinds = vscode.DocumentDropOrPasteEditKind;
+	const canOwnPaste = typeof vscode.languages.registerDocumentPasteEditProvider === 'function'
+		&& typeof vscode.DocumentPasteEdit === 'function'
+		&& !!pasteKinds && !!pasteKinds.Text;
+	if (canOwnPaste) {
+		ctx.subscriptions.push(vscode.languages.registerDocumentPasteEditProvider(selector, {
+			provideDocumentPasteEdits: (document, ranges) => formatter.provideDocumentPasteEdits(document, ranges),
+		}, { providedPasteEditKinds: [pasteKinds.Text] }));
+	}
 }

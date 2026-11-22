@@ -48,7 +48,9 @@ Allows formatting of just a specific block of code without touching the rest of 
   * A selection keeps its own base indentation (taken from the first selected line) and its blank lines, so formatting an event's `trigger = { ... }` block in place leaves the rest of the file untouched.
   * Selections run the same logic conversions as whole documents (`scope?` folding, `if` → `OR`, NOR repair): the block is wrapped, formatted by the Python tool, then re-based onto the selection's indentation so only the selected lines change.
   * Selections that cut through a block (unbalanced braces) are only re-indented, and any failure falls back to that built-in re-indenter.
-  * Regression test: `node test/extension_range_formatter.test.js`
+  * Regression tests: `node test/extension_conditional_conversions.test.js` (the bridge switches),
+    `node test/extension_paste.test.js` (format on paste) and `python test/logic_optimizer_cases.test.py`
+    (the formatter itself, including a fixpoint gate over `test/*.txt`).
 
 ### 4. Advanced Logic Optimization (NAND)
 The extension can now recognize and simplify complex logical expressions, such as nested `NAND` blocks, into a more readable and efficient format. This is particularly useful for complex AI logic or event scripting.
@@ -334,44 +336,40 @@ To ensure this formatter is used automatically when you save a file, you need to
 }
 ```
 
-### Enable "Format On Paste"
+### Format On Paste
 
-Formatting on paste is the **editor's** setting, not the formatter's: when `editor.formatOnPaste`
-is on, VS Code calls the extension's *range* formatter for the lines that were pasted - and a range
-formatter is exactly what this extension registers (the same one `Ctrl + K`, `Ctrl + F` uses for a
-selection). That is why the extension has no switch of its own for it and why pasting formats even
-though nothing in the extension's settings is enabled. (Up to 0.6.9 it contributed a
-`paradox-formatter.formatOnPaste` key that no code ever read - it has been removed rather than left
-to suggest an effect it does not have.)
+This is the extension's own switch, **`paradox-formatter.formatOnPaste`**, off by default, and it
+works in both directions without depending on the editor's setting:
 
-Paste formatting is **off by default in VS Code**. Turn it on for everything:
+| `paradox-formatter.formatOnPaste` | `editor.formatOnPaste` | what a paste does |
+|---|---|---|
+| on | any | formatted by this extension |
+| off | on | left exactly as pasted |
+| off | off | left exactly as pasted |
 
-```json
-"editor.formatOnPaste": true
-```
-
-Or turn it off for Paradox files only, keeping it on for everything else - a language-scoped value
-overrides the global one:
+To turn it on:
 
 ```json
-"[paradox]": {
-    "editor.defaultFormatter": "f1r3pr1nc3.paradox-script-formatter",
-    "editor.formatOnPaste": false
-},
-"[stellaris]": {
-    "editor.defaultFormatter": "f1r3pr1nc3.paradox-script-formatter",
-    "editor.formatOnPaste": false
-}
+"paradox-formatter.formatOnPaste": true
 ```
 
-**Format Document / Format Selection** (`Shift + Alt + F`, `Ctrl + K`, `Ctrl + F`) are not affected by
-`editor.formatOnPaste`; they always run.
+**Why a switch of its own.** The editor asks the extension's *range* formatter to format the pasted
+lines - and that is the same code `Ctrl + K`, `Ctrl + F` runs for a selection, so inside it a paste
+cannot be told from a selection. The extension therefore registers a paste provider as well (VS Code
+1.86 or newer): it knows a paste when it sees one, formats the pasted text itself while the switch is
+on, and answers the editor's own follow-up request with nothing - which is what makes "off" mean off
+even when `editor.formatOnPaste` is on.
 
-**Troubleshooting Tips:** if a paste still *looks* formatted with paste formatting off, check
-`editor.autoIndentOnPaste` (on by default): the editor re-indents the pasted lines to the indentation
-of the line above, which is the editor, not this formatter. Also check that the language of the file
-has the formatter selected in `editor.defaultFormatter` - a formatter that is not installed there
-means VS Code can fall back to whichever range formatter is registered for that language.
+Notes:
+
+  * **Multi-cursor pastes** put the same text down at several indents, and one paste edit cannot
+    carry that, so they follow `editor.formatOnPaste` (formatted while the switch is on, left alone
+    while it is off).
+  * **Format Document / Format Selection** are not affected: `Shift + Alt + F`, `Ctrl + K`,
+    `Ctrl + F` always run.
+  * `editor.autoIndentOnPaste` (on by default) re-indents pasted lines even with paste formatting
+    off - that is the editor snapping indentation, not this formatter.
+  * On VS Code older than 1.86 there is no paste API, so only `editor.formatOnPaste` applies.
 
 -----
 
