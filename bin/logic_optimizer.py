@@ -16,7 +16,7 @@ from collections import defaultdict
 import json
 import argparse
 
-__version__ = "0.6.6"
+__version__ = "0.6.9"
 
 USE_COUNT_TRIGGERS = False # Dev option to switch from any_ to count_ triggers (except NON_COUNT_TRIGGERS)
 USE_ANY_TRIGGERS = False # Dev option to switch from count_ to any_ triggers (except NON_ANY_TRIGGERS)
@@ -5509,7 +5509,7 @@ compact_nodes = (
 ) # Never LB if possible
 not_compact_nodes = (
 	"cost", "upkeep", "produces", "NOR", "OR", "NAND", "AND", "hidden_effect", "init_effect", "effect", "trigger", "default",
-	"settings", "weight", "pop_amount_change_category", "ai_weight"
+	"settings", "weight", "pop_amount_change_category", "ai_weight", "custom_tooltip"
 ) # Always LB
 not_compact_nodes += NON_NEGATABLE_SCOPES
 
