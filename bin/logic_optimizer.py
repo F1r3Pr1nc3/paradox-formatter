@@ -3377,18 +3377,21 @@ def optimize_node_list(node_list, parent_key=None, level=0, scope_context=None, 
 				for idx, cond in enumerate(first['limit']):
 					if not _is_open_nor(cond):
 						continue
-					# Dropping a leaf must not drop a comment, and the NOR may lose its last child as well -
-					# so a NOR with any comment on it or on one of its children is left alone
-					# ('caravaneer_scripted_effects.txt': 'has_country_flag = fleet2deal8 # Unique Planetary
-					# Deposit' inside the NOR).
-					if (any(cond.get(m) for m in ('_cm_open', '_cm_inline', '_cm_close', '_cm_preceding'))
-							or any(c.get(m) for c in cond['val']
-								for m in ('_cm_open', '_cm_inline', '_cm_close', '_cm_preceding'))):
-						continue
 					for leaf in cond['val']:
-						if nodes_are_equal(leaf, second['limit'][0]):
-							nor_idx, nor_leaf = idx, leaf
+						if not nodes_are_equal(leaf, second['limit'][0]):
+							continue
+						# The leaf goes, so any comment written on it would go with it
+						# ('caravaneer_scripted_effects.txt': 'has_country_flag = fleet2deal8 # Unique
+						# Planetary Deposit'). A comment on the NOR itself or on another child stays
+						# with the block, which survives - and when this leaf is the only child the block
+						# does not survive, so then its comments matter too.
+						if any(leaf.get(m) for m in ('_cm_open', '_cm_inline', '_cm_close', '_cm_preceding')):
 							break
+						if len(cond['val']) == 1 and any(cond.get(m) for m in (
+								'_cm_open', '_cm_inline', '_cm_close', '_cm_preceding')):
+							break
+						nor_idx, nor_leaf = idx, leaf
+						break
 					if nor_leaf is not None:
 						break
 			if negated_idx == -1 and nor_leaf is None:
