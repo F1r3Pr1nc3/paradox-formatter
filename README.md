@@ -336,7 +336,22 @@ To ensure this formatter is used automatically when you save a file, you need to
 
 ### Enable "Format On Paste"
 
-To automatically format code when pasting, add these settings to your `settings.json`:
+Formatting on paste is the **editor's** setting, not the formatter's: when `editor.formatOnPaste`
+is on, VS Code calls the extension's *range* formatter for the lines that were pasted - and a range
+formatter is exactly what this extension registers (the same one `Ctrl + K`, `Ctrl + F` uses for a
+selection). That is why the extension has no switch of its own for it and why pasting formats even
+though nothing in the extension's settings is enabled. (Up to 0.6.9 it contributed a
+`paradox-formatter.formatOnPaste` key that no code ever read - it has been removed rather than left
+to suggest an effect it does not have.)
+
+Paste formatting is **off by default in VS Code**. Turn it on for everything:
+
+```json
+"editor.formatOnPaste": true
+```
+
+Or turn it off for Paradox files only, keeping it on for everything else - a language-scoped value
+overrides the global one:
 
 ```json
 "[paradox]": {
@@ -349,8 +364,14 @@ To automatically format code when pasting, add these settings to your `settings.
 }
 ```
 
-**Troubleshooting Tips:**
-If it doesn't format automatically, check the global setting: Search settings for `Format On Paste` and ensure it is checked.
+**Format Document / Format Selection** (`Shift + Alt + F`, `Ctrl + K`, `Ctrl + F`) are not affected by
+`editor.formatOnPaste`; they always run.
+
+**Troubleshooting Tips:** if a paste still *looks* formatted with paste formatting off, check
+`editor.autoIndentOnPaste` (on by default): the editor re-indents the pasted lines to the indentation
+of the line above, which is the editor, not this formatter. Also check that the language of the file
+has the formatter selected in `editor.defaultFormatter` - a formatter that is not installed there
+means VS Code can fall back to whichever range formatter is registered for that language.
 
 -----
 

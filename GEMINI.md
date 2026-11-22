@@ -5,7 +5,7 @@ This project is a VS Code extension (`f1r3pr1nc3.paradox-formatter`) that provid
 
 ## Key Components
 - `bin/logic_optimizer.py`: The core Python script responsible for parsing and optimizing Clausewitz logic. It handles De Morgan's laws, double negation removal, and NAND simplifications. It uses a custom tokenizer and parser to handle the unique structure of Paradox scripts.
-- `out/extension.js`: The compiled VS Code extension entry point that interfaces with the Python backend.
+- `out/extension.js`: The compiled VS Code extension entry point that interfaces with the Python backend. It registers a document formatter and a range formatter, and nothing else - **"format on paste" is the editor's `editor.formatOnPaste`**, which calls that range provider for the pasted lines (VS Code's `FormatOnPaste` contribution → `formatDocumentRangesWithSelectedProvider` in silent mode; the same provider `Ctrl+K Ctrl+F` uses for a selection). The extension cannot tell a paste from "Format Selection" inside `provideDocumentRangeFormattingEdits`, so it must never try to own that switch: a `paradox-formatter.formatOnPaste` key was contributed from 0.4.1 to 0.6.9 and no code ever read it - removed, because a checkbox that does nothing is worse than none. Turning paste formatting off is the language-scoped `"[paradox]": { "editor.formatOnPaste": false }`. Note `editor.autoIndentOnPaste` (on by default) re-indents pasted lines even with formatting off, which is the editor and not this formatter.
 - `syntaxes/`: Contains TextMate grammars (`.tmLanguage.json`) for various Paradox games to provide syntax highlighting.
 - `test/`: Contains test event files for verification.
 
