@@ -1883,74 +1883,62 @@ def _mentions_event_target_exists(nodes, depth=0):
 	return False
 
 
-# --- names a conditional can create and a following limit can test ------------------------------
-# 'if = { limit = { NOT = { exists = event_target:X } C } space_owner = { save_event_target_as = X } }'
-# followed by 'if = { limit = { exists = event_target:X } ... }' is the 'create it if it is missing'
-# idiom (marauder_events.txt, marauder.560): the first body creates the name the second limit needs,
-# so the two are not interchangeable branches - the pair has to keep its order. Swapping them (which
-# the if/if reorder does) evaluates that limit before the name exists, and the entire chain behind it
-# then runs without the target it was set up with.
-#
-# The effect side cannot be checked in general: the creation may sit one scope down
-# ('space_owner = { save_event_target_as = X }', as there) or behind a scripted effect, so the
-# *shape* is what counts - a limit that tests the absence of a name in front of a limit that tests
-# its presence. Where the body's own effects are readable, the same argument is applied to the names
-# it writes: a body that defines or removes what the next limit tests is order-dependent too
-# ('set_variable' + 'check_variable', 'set_country_flag' + 'has_country_flag').
-TARGET_WRITING_EFFECTS = ('save_event_target_as', 'save_global_event_target_as')
-VARIABLE_WRITING_EFFECTS = ('set_variable', 'set_global_variable', 'remove_variable',
-	'remove_global_variable', 'clear_variable', 'clr_variable')
-
-
-def _child_scalar(nodes, key):
-	"""The scalar value of the first child named 'key' ('set_variable = { which = X value = .. }')."""
-	for node in nodes or []:
-		if node.get('type') == 'node' and str(node.get('key', '')) == key:
-			val = node.get('val')
-			if isinstance(val, str) and val:
-				return _scalar_key(val)
-	return None
+# --- a conditional that tests a name the next one requires --------------------------------------
+# 'if = { limit = { NOT = { exists = event_target:X } C } .. save_event_target_as = X }' followed by
+# 'if = { limit = { exists = event_target:X } .. }' is the 'create it if it is missing' idiom
+# (marauder_events.txt, marauder.560): the first body creates the name the second limit needs, so the
+# two are not interchangeable branches and the pair has to keep its order. Both rules that restructure
+# such a pair - the if/if reorder and the if/if -> if/else fold - pair a limit with one that negates a
+# conjunct of it, so a name the second limit requires is always one the first forbids; comparing those
+# two sets is enough, and is also all that can be seen here: the creation is regularly one scope down
+# ('space_owner = { save_event_target_as = X }') or several scripted effects away
+# (shroud_shadows_scripted_effects.txt sets 'exile_world' three calls deep).
+TARGET_PREFIX = 'event_target:'
 
 
 def _name_test_of(node):
-	"""(kind, name) when a node tests the existence or definition of a name, else None.
+	"""The name a node tests, or None: an event target, a variable or a flag.
 
-	An event target is a name ('event_target:X', also as a scope switch); a plain scope
-	('overlord', 'root') is not one this can track. Variables are named by
-	'is_variable_set'/'check_variable', flags by the 'has_*_flag' triggers.
+	The bare name, so the same thing compares equal however a limit spells it: 'exists =
+	event_target:X', 'event_target:X = { .. }' and 'event_target:X? = { .. }' answer 'X';
+	'is_variable_set = X' and 'check_variable = { which = X .. }' answer 'X'; 'has_*_flag = X'
+	answers 'X'. A plain scope ('overlord', 'root') is not a name anything can create.
 	"""
 	key = str(node.get('key', '')).lower()
 	val = node.get('val')
 	if isinstance(val, list):
 		base = key[:-1] if key.endswith('?') else key
-		if base.startswith('event_target:') and len(base) > len('event_target:'):
-			return ('target', base[len('event_target:'):])
-		if base in ('check_variable', 'set_variable', 'is_variable_set'):
-			name = _child_scalar(val, 'which')
-			if name:
-				return ('var', name.lower())
+		if base == 'check_variable':
+			for child in val:
+				if child.get('type') == 'node' and str(child.get('key', '')) == 'which':
+					scalar = child.get('val')
+					return _scalar_key(scalar) if isinstance(scalar, str) and scalar else None
+			return None
+		if base.startswith(TARGET_PREFIX) and len(base) > len(TARGET_PREFIX):
+			return base[len(TARGET_PREFIX):]
 		return None
 	if not isinstance(val, str):
 		return None
 	value = _scalar_key(val).lower()
-	if key == 'exists' and value.startswith('event_target:') and len(value) > len('event_target:'):
-		return ('target', value[len('event_target:'):])
+	if key == 'exists' and value.startswith(TARGET_PREFIX):
+		return value[len(TARGET_PREFIX):]
 	if key == 'is_variable_set' and value:
-		return ('var', value)
+		return value
 	if key.startswith('has_') and key.endswith('_flag') and value:
-		return ('flag', value)
+		return value
 	return None
 
 
-def _name_tests(nodes, polarity=1, depth=0):
-	"""The names a trigger list tests, as (kind, name, polarity); polarity 0 means 'in a disjunction'.
+def _names_tested(nodes, forbidden=None, required=None, negated=False, depth=0):
+	"""(forbidden, required) names of a trigger list.
 
-	'NOT = { .. }' and 'NOR = { .. }' flip the polarity of their children, 'AND' and the scope blocks
-	keep it, and inside 'OR'/'NAND' a child says nothing on its own, so those come back as 0.
+	'NOT' and 'NOR' flip the side their children land on, 'AND' and the scope blocks keep it, and
+	inside 'OR'/'NAND' a child says nothing on its own ('negated' stays None there).
 	"""
+	if forbidden is None:
+		forbidden, required = set(), set()
 	if depth > 6:
-		return set()
-	out = set()
+		return forbidden, required
 	for node in nodes or []:
 		if node.get('type') != 'node':
 			continue
@@ -1958,63 +1946,24 @@ def _name_tests(nodes, polarity=1, depth=0):
 		val = node.get('val')
 		is_block = isinstance(val, list)
 		if is_block and key in ('NOT', 'NOR'):
-			out |= _name_tests(val, -polarity, depth + 1)
+			_names_tested(val, forbidden, required, (not negated) if negated is not None else None, depth + 1)
 			continue
 		if is_block and key in ('OR', 'NAND'):
-			out |= _name_tests(val, 0, depth + 1)
+			_names_tested(val, forbidden, required, None, depth + 1)
 			continue
-		test = _name_test_of(node)
-		if test is not None:
-			out.add((test[0], test[1], polarity))
+		name = _name_test_of(node)
+		if name is not None and negated is not None:
+			(forbidden if negated else required).add(name)
 		if is_block:
-			out |= _name_tests(val, polarity, depth + 1)
-	return out
-
-
-def _written_names(nodes, depth=0):
-	"""The names an effect body creates or removes, as (kind, name)."""
-	if depth > 8:
-		return set()
-	out = set()
-	for node in nodes or []:
-		if node.get('type') != 'node':
-			continue
-		key = str(node.get('key', '')).lower()
-		val = node.get('val')
-		if isinstance(val, list):
-			if key in VARIABLE_WRITING_EFFECTS:
-				name = _child_scalar(val, 'which')
-				if name:
-					out.add(('var', name.lower()))
-			out |= _written_names(val, depth + 1)
-			continue
-		if not isinstance(val, str):
-			continue
-		name = _scalar_key(val).lower()
-		if not name:
-			continue
-		if key in TARGET_WRITING_EFFECTS:
-			out.add(('target', name))
-		elif key.startswith('set_') and key.endswith('_flag'):
-			out.add(('flag', name))
-		elif key.startswith('remove_') and key.endswith('_flag'):
-			out.add(('flag', name))
-	return out
+			_names_tested(val, forbidden, required, negated, depth + 1)
+	return forbidden, required
 
 
 def _setup_block_guard(first, second):
-	"""True when 'first' sets up what 'second' tests, so the two must keep their order.
-
-	'first' and 'second' are '_conditional_limit_and_body' results. Either evidence is enough: the
-	shape (first tests that a name is missing, second tests that it is there) or, where the effects
-	are readable, a name the first body writes that the second limit tests.
-	"""
-	absent = {(kind, name) for kind, name, polarity in _name_tests(first['limit']) if polarity < 0}
-	present = {(kind, name) for kind, name, polarity in _name_tests(second['limit']) if polarity > 0}
-	if absent & present:
-		return True
-	tested = {(kind, name) for kind, name, polarity in _name_tests(second['limit'])}
-	return bool(_written_names(first['body']) & tested)
+	"""True when the first conditional forbids a name the second one requires."""
+	forbidden, _ = _names_tested(first['limit'])
+	_, required = _names_tested(second['limit'])
+	return bool(forbidden & required)
 
 
 def _dead_nor_scope_block(node):
